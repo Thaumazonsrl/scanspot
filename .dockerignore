@@ -1,0 +1,54 @@
+# Keep the build context small and keep secrets away from the daemon.
+#
+# The Dockerfile only COPYs requirements.txt, app/ and certs/, so nothing below
+# could end up in an image layer today. This file is belt-and-braces: it means a
+# future COPY . cannot leak anything, and it stops the whole .git history being
+# uploaded to the daemon on every build.
+
+# Version control and CI
+.git/
+.gitignore
+.github/
+
+# Secrets. Never needed at build time.
+.env
+*.env
+
+# Tests and tooling — not shipped in the image.
+tests/
+pyproject.toml
+requirements-dev.txt
+
+# Documentation and orchestration.
+README.md
+CONTRIBUTING.md
+CHANGELOG.md
+SECURITY.md
+LICENSE
+NOTICE
+docker-compose.yml
+scripts/
+
+# inventory.yml is bind-mounted at runtime, not baked in.
+inventory.yml
+
+# Python and test artefacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Agent / editor / OS state
+.claude/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# NOTE: certs/ is deliberately NOT ignored — the Dockerfile copies it into the
+# system trust store so the image can be built behind a TLS-inspecting proxy.
+# The *.crt files inside it are gitignored; they just never reach a public repo.

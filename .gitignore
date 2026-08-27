@@ -1,0 +1,41 @@
+# Local configuration — holds the NetBox token, the SNMP community and the
+# FortiGate API key. Never commit.
+#
+# `.env.*` is deliberately broad: `*.env` alone would miss .env.prod,
+# .env.local, .env.client-a and every other variant people actually create.
+.env
+.env.*
+*.env
+!.env.example
+
+# Saved image tarballs (docker save … | gzip), which can be large and may embed
+# a build-host CA.
+*.tar
+*.tar.gz
+*.tgz
+
+# Site-specific credential profiles / seed, if you keep one outside .env
+inventory.local.yml
+
+# Corporate TLS-inspection CA. Specific to the machine the image is built on,
+# and it identifies your organisation — regenerate it per build host, never
+# commit it. See certs/README.md.
+certs/*
+!certs/README.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Agent / editor / OS state
+.claude/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

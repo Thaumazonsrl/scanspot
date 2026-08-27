@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The package is imported as `app.*`, mirroring its layout inside the image.
+pythonpath = ["."]
+addopts = "-q"

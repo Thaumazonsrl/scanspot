@@ -1,0 +1,5 @@
+pynetbox>=7.3,<8.0
+requests>=2.31,<3.0
+urllib3>=2.0,<3.0
+PyYAML>=6.0,<7.0
+APScheduler>=3.10,<4.0

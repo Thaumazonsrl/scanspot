@@ -1,0 +1,103 @@
+###############################################################################
+# Scanner bootstrap file.
+#
+# It holds two things, and deliberately not the device list:
+#
+#   credentials:  named profiles the devices in NetBox point at by name.
+#                 ${VAR} placeholders are resolved from the container
+#                 environment (i.e. .env), so no secret is written here.
+#
+#   seed:         devices created in NetBox on the FIRST run only, so the GUI
+#                 is not empty on day one. After that NetBox is authoritative:
+#                 add, edit and remove switches from the web interface.
+#
+# Mounted read-only at /app/inventory.yml. After editing:
+#   docker compose restart scanner
+###############################################################################
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Credential profiles
+#
+# "default" (SNMP, from the SNMP_* variables in .env) and "fortigate-default"
+# (FortiOS, from the FORTIGATE_* variables) always exist even if you delete
+# them here. Define extra profiles when a client has more than one community
+# string or more than one firewall token.
+#
+# type: snmp
+#   snmp_version       1 | 2c | 3
+#   community          v1/v2c community string
+#   v3_username        SNMPv3 user
+#   v3_security_level  noAuthNoPriv | authNoPriv | authPriv
+#   v3_auth_protocol   MD5 | SHA | SHA-224 | SHA-256 | SHA-384 | SHA-512
+#   v3_auth_password   authentication passphrase
+#   v3_priv_protocol   DES | AES | AES-192 | AES-256
+#   v3_priv_password   privacy passphrase
+#   timeout, retries, uplink_mac_threshold, vlan_indexing   (optional)
+#
+# type: fortios
+#   api_token, port, vdom, verify_ssl, timeout
+#
+# On the FortiGate the token comes from System > Administrators > Create New >
+# REST API Admin, with a profile granting READ on System, Network and Router,
+# and Trusted Hosts restricted to the /32 of this VM.
+# ─────────────────────────────────────────────────────────────────────────────
+credentials:
+
+  default:
+    type: snmp
+    snmp_version: ${SNMP_DEFAULT_VERSION:-2c}
+    community: ${SNMP_COMMUNITY}
+
+  # --- example: a second community used by the server-room switches ----------
+  # servers-ro:
+  #   type: snmp
+  #   snmp_version: 2c
+  #   community: ${SNMP_COMMUNITY_SERVERS}
+  #
+  # --- example: SNMPv3, the right choice on anything modern -----------------
+  # snmpv3:
+  #   type: snmp
+  #   snmp_version: 3
+  #   v3_username: ${SNMP_V3_USERNAME}
+  #   v3_security_level: authPriv
+  #   v3_auth_protocol: SHA
+  #   v3_auth_password: ${SNMP_V3_AUTH_PASSWORD}
+  #   v3_priv_protocol: AES
+  #   v3_priv_password: ${SNMP_V3_PRIV_PASSWORD}
+  #
+  # --- example: a branch firewall with its own token -------------------------
+  # fgt-branch:
+  #   type: fortios
+  #   api_token: ${FORTIGATE_BRANCH_TOKEN}
+  #   vdom: root
+  #   verify_ssl: false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Initial seed — first run only
+#
+# Each entry becomes a NetBox device tagged "scan-target". Delete or edit them
+# in NetBox afterwards; they are not recreated. To replay the seed on purpose,
+# delete /app/state/seeded.json (docker compose down -v also does it).
+#
+# `vendor` is optional: it pins the MAC-table strategy. Left empty, the vendor
+# is detected from sysObjectID on the first poll, which is the normal case.
+# ─────────────────────────────────────────────────────────────────────────────
+seed:
+
+  switches: []
+  # switches:
+  #   - name: sw-core-01
+  #     host: 10.0.0.10
+  #     credential: default
+  #   - name: sw-access-02
+  #     host: 10.0.0.11
+  #     credential: snmpv3
+  #     vendor: cisco        # optional override
+
+  fortigates: []
+  # fortigates:
+  #   - name: fortigate-01
+  #     host: 10.0.0.1
+  #     # The NAME of a profile above — never the token itself. The built-in
+  #     # "fortigate-default" profile reads FORTIGATE_API_TOKEN from .env.
+  #     credential: fortigate-default

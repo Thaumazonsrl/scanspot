@@ -1,0 +1,59 @@
+name: Bug report
+description: Something behaves differently from what the documentation says.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before you paste anything: redact your SNMP community strings, SNMPv3
+        passphrases, API tokens and any public IP addresses.** Logs at DEBUG
+        level are verbose and it is easy to include one by accident.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      placeholder: |
+        1. Tag a device 'scan-target' with …
+        2. Run `docker compose exec scanner python -m app.main --once`
+        3. …
+    validations:
+      required: true
+
+  - type: input
+    id: scanspot-version
+    attributes:
+      label: scanspot version
+      description: "Output of `docker compose exec scanner python -m app.main --version`"
+    validations:
+      required: true
+
+  - type: input
+    id: netbox-version
+    attributes:
+      label: NetBox version
+      placeholder: "4.1.11"
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Device involved
+      description: Vendor, model and OS version, if the problem involves a polled device.
+      placeholder: "Cisco C2960X, IOS 15.2(7)E3"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "Relevant lines with `LOG_LEVEL=DEBUG`. Redact secrets first."
+      render: text

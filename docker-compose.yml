@@ -1,0 +1,80 @@
+###############################################################################
+# scanspot — standalone deployment against an existing NetBox.
+#
+#   cp .env.example .env     # set NETBOX_URL and NETBOX_TOKEN
+#   docker compose run --rm scanner python -m app.main --check
+#   docker compose up -d
+#
+# If you do not have a NetBox yet, the netbox-community/netbox-docker project
+# is the usual way to get one. scanspot only needs its URL and an API token.
+###############################################################################
+
+services:
+
+  scanner:
+    build:
+      context: .
+    image: scanspot:1.0
+    # The image only ever exists locally unless you pull it from a registry.
+    # Without an explicit policy compose tries to pull first and prints a
+    # misleading "pull access denied"; "build" also means `up -d` picks up any
+    # local change (a no-op rebuild takes ~2s from cache).
+    pull_policy: build
+    container_name: scanspot
+    restart: unless-stopped
+
+    # Optional so that `docker compose build` works on a fresh clone. If .env is
+    # missing at run time the scanner exits with "NETBOX_TOKEN is not set",
+    # which is a far more useful message than a compose file-not-found error.
+    env_file:
+      - path: .env
+        required: false
+
+    volumes:
+      # Credential profiles and the optional first-run seed.
+      - ./inventory.yml:/app/inventory.yml:ro
+      # Cycle heartbeat and the "already seeded" marker. Keep it: deleting this
+      # volume replays the seed.
+      - scanner-state:/app/state
+
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      # Generous on purpose: the first cycle may walk a large SNMP forwarding
+      # database before it can report in.
+      start_period: 600s
+
+volumes:
+  scanner-state:
+
+###############################################################################
+# If your NetBox runs in Docker on this same host, put scanspot on its network
+# so NETBOX_URL can use the service name instead of a published port:
+#
+#   services:
+#     scanner:
+#       networks: [netbox_default]
+#   networks:
+#     netbox_default:
+#       external: true
+#
+# and set NETBOX_URL=http://netbox:8080 in .env.
+#
+# ── A warning worth reading before you deploy on a corporate LAN ─────────────
+# Docker allocates compose networks from 172.17.0.0/12 by default, which is a
+# very common corporate LAN range. When the bridge overlaps the LAN, containers
+# silently lose the ability to reach the real network: packets for a switch are
+# delivered on the bridge instead of being routed out, and scanspot reports
+# every device as unreachable with no visible cause.
+#
+# Check it before the first run, and pin a free range if it collides:
+#
+#   networks:
+#     default:
+#       ipam:
+#         driver: default
+#         config:
+#           - subnet: 10.89.7.0/24
+###############################################################################

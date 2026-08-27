@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: tests (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 is what the image ships; 3.11 is the oldest the code supports.
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest
+
+  image:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t scanspot:ci .
+
+      # The container must start, parse its arguments and fail cleanly on a
+      # missing configuration rather than traceback. This catches a broken
+      # ENTRYPOINT or a missing dependency, which a unit test cannot.
+      - name: Smoke test — CLI is wired up
+        run: docker run --rm scanspot:ci python -m app.main --help
+
+      - name: Smoke test — missing config exits 2 with a readable error
+        run: |
+          set +e
+          output=$(docker run --rm scanspot:ci python -m app.main --check 2>&1)
+          code=$?
+          set -e
+          echo "$output"
+          test "$code" -eq 2
+          echo "$output" | grep -q "NETBOX_TOKEN is not set"
+
+      - name: Smoke test — healthcheck reports unhealthy before the first cycle
+        run: |
+          set +e
+          docker run --rm scanspot:ci python -m app.healthcheck
+          test $? -eq 1
