@@ -1,0 +1,24 @@
+###############################################################################
+# Build from source instead of pulling the published image.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# Use this when you are working on the code, or on a host that cannot reach
+# ghcr.io. Everything else — volumes, healthcheck, env_file — is inherited from
+# docker-compose.yml.
+#
+# Behind a TLS-inspecting corporate proxy the build will fail with
+# CERTIFICATE_VERIFY_FAILED until you export the proxy CA; see certs/README.md.
+###############################################################################
+
+services:
+
+  scanner:
+    build:
+      context: .
+    # Overrides the ghcr.io reference so a local build is never confused with a
+    # released version.
+    image: scanspot:dev
+    # Without this, compose tries to pull "scanspot:dev" first and prints a
+    # misleading "pull access denied" before falling back.
+    pull_policy: build

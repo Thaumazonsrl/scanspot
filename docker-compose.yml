@@ -1,30 +1,29 @@
 ###############################################################################
-# scanspot — standalone deployment against an existing NetBox.
+# scanspot — deployment against an existing NetBox.
 #
 #   cp .env.example .env     # set NETBOX_URL and NETBOX_TOKEN
-#   docker compose run --rm scanner python -m app.main --check
 #   docker compose up -d
 #
-# If you do not have a NetBox yet, the netbox-community/netbox-docker project
-# is the usual way to get one. scanspot only needs its URL and an API token.
+# This pulls a published image; nothing is built locally. The package lives in
+# GitHub Container Registry and inherits the repository's visibility, so if the
+# repo is private you must authenticate once on each host:
+#
+#   echo <TOKEN> | docker login ghcr.io -u <github-username> --password-stdin
+#
+# To build from source instead (contributors, or an air-gapped host):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ###############################################################################
 
 services:
 
   scanner:
-    build:
-      context: .
-    image: scanspot:1.0
-    # The image only ever exists locally unless you pull it from a registry.
-    # Without an explicit policy compose tries to pull first and prints a
-    # misleading "pull access denied"; "build" also means `up -d` picks up any
-    # local change (a no-op rebuild takes ~2s from cache).
-    pull_policy: build
+    image: ghcr.io/thaumazonsrl/scanspot:1.0.0
     container_name: scanspot
     restart: unless-stopped
 
-    # Optional so that `docker compose build` works on a fresh clone. If .env is
-    # missing at run time the scanner exits with "NETBOX_TOKEN is not set",
+    # Optional so that `docker compose config` works on a fresh clone. If .env
+    # is missing at run time the scanner exits with "NETBOX_TOKEN is not set",
     # which is a far more useful message than a compose file-not-found error.
     env_file:
       - path: .env

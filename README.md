@@ -76,8 +76,18 @@ cd scanspot
 cp .env.example .env
 # set NETBOX_URL and NETBOX_TOKEN, plus SNMP_COMMUNITY and/or FORTIGATE_API_TOKEN
 
-docker compose build
+# The image is pulled from GHCR — nothing is built locally.
+# If the package is private, authenticate once on this host first:
+#   echo <TOKEN> | docker login ghcr.io -u <github-username> --password-stdin
+
 docker compose run --rm scanner python -m app.main --check   # validate config + connectivity
+```
+
+To build from source instead — contributors, or a host that cannot reach
+ghcr.io:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
 Then add your first device (below), and run a cycle:

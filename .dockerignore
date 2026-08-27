@@ -27,6 +27,7 @@ SECURITY.md
 LICENSE
 NOTICE
 docker-compose.yml
+docker-compose.build.yml
 scripts/
 
 # inventory.yml is bind-mounted at runtime, not baked in.
