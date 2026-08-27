@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+* **Local store** (`app/store/`) — SQLAlchemy models, engine with a configurable
+  DSN (`SCANSPOT_DB_URL`, SQLite by default, PostgreSQL opt-in), Fernet
+  encryption for credential secrets, and Alembic migrations applied by the
+  container itself on startup. Schema and rationale: `docs/design/store.md`.
+* `site` is a first-class dimension: identity is `(site_id, mac)`, so the same
+  address space and the same hardware may appear at more than one office.
+* Credential profiles support two storage modes: `inline` (encrypted in the
+  database, manageable without a restart) and `env_ref` (the value stays in the
+  environment, for Kubernetes Secrets and Vault users). Secrets are a mapping,
+  so SNMPv3's two passphrases are first-class rather than a special case.
+* Credential profiles defined in `inventory.yml` as `${VAR}` are recorded as
+  *references* to that variable — the secret itself is never copied into the
+  database.
+
+* **HTTP API** (`app/api/`, FastAPI) served from the same process as the
+  scheduler, so the container stays a single unit. Manage scan targets and
+  credential profiles, trigger a scan, and read health. OpenAPI document at
+  `/api/openapi.json`, docs at `/api/docs`.
+  * Authentication by API key (`X-API-Key` or `Authorization: Bearer`), hashed
+    with SHA-256. A first key is generated on startup and logged **once**.
+  * `/api/v1/health` needs no key — a Kubernetes probe cannot carry one — and
+    exposes no infrastructure detail, not even the database password.
+  * **Secrets are never returned.** Credential responses carry `has_secret` and
+    not the value, nor the names of the environment variables referenced.
+  * The API starts *before* NetBox is waited on. A fresh NetBox takes minutes to
+    migrate, and that is precisely when targets need to be manageable.
+* **Discovery is persisted to the store**, before the backend sync and
+  unconditionally: what the network reported is recorded even when NetBox is
+  unreachable. Backends are exporters of this data, not the place it lives.
+  * `endpoints` / `endpoint_addresses` hold current state, one row per
+    `(site, mac)`; `events` is an append-only change log — discovered, moved,
+    ip_added, ip_removed, went_offline, returned. No per-cycle snapshot, which
+    at a few thousand endpoints would be millions of rows a month.
+  * Endpoints not seen for `OFFLINE_AFTER_HOURS` are flagged offline in the
+    store. Nothing is deleted there: the history is the reason it exists.
+  * Read endpoints: `/devices`, `/devices/{mac}`, `/prefixes`, `/vlans`,
+    `/runs`, `/events`, all filterable and paginated.
+  * A store failure does not cost the NetBox sync, and a sync failure does not
+    cost the stored record.
+
+### Changed
+
+* **Scan targets live in scanspot's store, not in NetBox.** NetBox still offers
+  them: devices tagged `scan-target` are imported every cycle, so the workflow
+  is unchanged from a user's point of view. Ownership is now explicit — imported
+  targets are refreshed from NetBox and disabled when the tag goes away, targets
+  created any other way are never touched by the import, and a NetBox outage
+  disables nothing.
+* `app/backends/netbox/targets.py` is gone. Loading lives in `app/targets.py`
+  (backend-neutral); the one-shot 1.x import lives in
+  `app/backends/netbox/import_targets.py`.
+* The `inventory.yml` seed now creates targets in the store instead of NetBox
+  devices, and `state/seeded.json` is no longer used — a target with
+  `source="seed"` records the same thing.
+
 ### Planned
 
 * A formal backend interface. The package is already split so that collectors

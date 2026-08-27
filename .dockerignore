@@ -24,11 +24,16 @@ README.md
 CONTRIBUTING.md
 CHANGELOG.md
 SECURITY.md
+CLAUDE.md
 LICENSE
 NOTICE
+docs/
 docker-compose.yml
 docker-compose.build.yml
 scripts/
+
+# NOTE: alembic.ini is deliberately NOT ignored — the container runs its own
+# migrations, and Alembic needs it alongside app/store/migrations/.
 
 # inventory.yml is bind-mounted at runtime, not baked in.
 inventory.yml

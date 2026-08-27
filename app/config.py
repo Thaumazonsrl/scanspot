@@ -26,8 +26,20 @@ from typing import Any
 import yaml
 
 _PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+# The same thing anchored: a value that is *entirely* one placeholder can be
+# recorded in the store as a reference to that variable, so the secret itself
+# never reaches the database.
+_WHOLE_PLACEHOLDER = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}$")
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+def env_var_reference(value) -> str | None:
+    """Return VAR if `value` is exactly `${VAR}` or `${VAR:-default}`."""
+    if value is None:
+        return None
+    match = _WHOLE_PLACEHOLDER.match(str(value).strip())
+    return match.group(1) if match else None
 
 
 def env_str(name: str, default: str = "") -> str:
@@ -196,6 +208,13 @@ class LifecycleSettings:
 
 
 @dataclass
+class ApiSettings:
+    enabled: bool
+    host: str
+    port: int
+
+
+@dataclass
 class ScannerSettings:
     interval_minutes: int
     run_on_start: bool
@@ -236,6 +255,9 @@ class AppConfig:
     netbox: NetBoxSettings
     lifecycle: LifecycleSettings
     scanner: ScannerSettings
+    api: ApiSettings = field(
+        default_factory=lambda: ApiSettings(enabled=True, host="0.0.0.0", port=8080)
+    )
     # name -> raw profile dict (already expanded from ${VAR})
     credentials: dict[str, dict] = field(default_factory=dict)
     seeds: list[SeedEntry] = field(default_factory=list)
@@ -360,13 +382,47 @@ def load_config() -> AppConfig:
             )
         )
 
+    api = ApiSettings(
+        enabled=env_bool("API_ENABLED", True),
+        # 0.0.0.0 because the container has no other useful interface; expose
+        # the port deliberately in compose, and put TLS in front of it if it
+        # leaves the management network.
+        host=env_str("API_HOST", "0.0.0.0"),
+        port=env_int("API_PORT", 8080),
+    )
+
     return AppConfig(
         netbox=netbox,
         lifecycle=lifecycle,
         scanner=scanner,
+        api=api,
         credentials=credentials,
         seeds=seeds,
     )
+
+
+def load_raw_credentials() -> dict[str, dict]:
+    """The `credentials` block of inventory.yml exactly as written.
+
+    Unexpanded on purpose: importing a profile into the store needs to know
+    that a value is `${SNMP_COMMUNITY}` rather than what that expands to, so it
+    can be stored as a reference instead of a copy of the secret.
+    """
+    path = Path(env_str("INVENTORY_FILE", "/app/inventory.yml"))
+    if not path.is_file():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle) or {}
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(name).strip(): profile
+        for name, profile in (raw.get("credentials") or {}).items()
+        if isinstance(profile, dict)
+    }
 
 
 def _load_inventory() -> tuple[dict[str, dict], list[SeedEntry]]:

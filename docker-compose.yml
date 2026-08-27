@@ -29,6 +29,15 @@ services:
       - path: .env
         required: false
 
+    ports:
+      # The API, and its OpenAPI docs at /api/docs. Drop this mapping to keep
+      # scanspot reachable only from inside the compose network, or set
+      # API_ENABLED=false to not start the server at all.
+      #
+      # It speaks plain HTTP: put TLS in front of it if it leaves the
+      # management network.
+      - "${API_PORT:-8080}:8080"
+
     volumes:
       # Credential profiles and the optional first-run seed.
       - ./inventory.yml:/app/inventory.yml:ro

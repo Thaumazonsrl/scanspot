@@ -184,8 +184,16 @@ set snmp community NB-READ authorization read-only
 
 ## Adding a device to the scan
 
-**NetBox is the device list.** There is no file to edit and no container to
-restart — this happens entirely in the browser.
+Tag a device in NetBox and scanspot picks it up on the next cycle. No file to
+edit, no container to restart — this happens entirely in the browser.
+
+> **Where the list actually lives.** From 2.0 scanspot keeps its own store, and
+> that store is authoritative. NetBox still *offers* targets — the import below
+> runs every cycle — but it is one-way: a device you tagged is owned by NetBox
+> and refreshed from it, while a target created any other way is never touched
+> by the import. Untagging a device disables its target rather than deleting it,
+> so its discovery history survives. This is what will let scanspot work with
+> backends that have no device model to hold a target at all.
 
 1. **Devices → Devices → Add**
    * *Role*: **Network Switch**, or **Firewall** for a FortiGate
@@ -213,6 +221,70 @@ community string or API token behind that name lives in `.env`. Someone with
 read access to NetBox learns which devices are polled, not how.
 
 ---
+
+## The API
+
+scanspot exposes an HTTP API over its own store — manage targets, trigger a
+scan, and let other systems consume what it discovers. Interactive docs at
+**`http://<host>:8080/api/docs`**, machine-readable at `/api/openapi.json`.
+
+On first start a key is generated and printed to the log **once**:
+
+```
+WARNING [api] A first API key has been generated. It is shown ONCE:
+WARNING [api]     scanspot_k5l99Tj601A_dJWNXJtCrZKRi5m2O9S1RBHINhVhWUk
+```
+
+Only its hash is stored, so save it there and then.
+
+```bash
+KEY=scanspot_…
+
+curl -s localhost:8080/api/v1/health                       # no key needed
+
+curl -s -H "X-API-Key: $KEY" localhost:8080/api/v1/targets
+
+curl -s -X POST localhost:8080/api/v1/targets \
+     -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+     -d '{"name":"sw-core-01","address":"10.0.0.10","method":"snmp"}'
+
+curl -s -X POST -H "X-API-Key: $KEY" localhost:8080/api/v1/scan
+```
+
+### What it exposes
+
+| | |
+|---|---|
+| `/health` | last cycle, counts. **No key needed** |
+| `/targets` | the device list — create, edit, disable, delete |
+| `/credentials` | profiles. Never returns a secret |
+| `/devices`, `/devices/{mac}` | discovered endpoints, with their addresses |
+| `/prefixes`, `/vlans` | the routed subnets and VLANs found |
+| `/runs` | cycle history |
+| `/events` | the change log — moved port, new lease, went offline |
+| `POST /scan` | run a cycle now |
+
+`/devices` carries **everything the collectors learned** — switch port, VLAN,
+firewall interface, reservation state — not the subset a particular backend
+happens to store. That is deliberate: it is what makes writing an exporter into
+LibreNMS, Zabbix or an in-house CMDB worth the effort.
+
+```bash
+curl -s -H "X-API-Key: $KEY" 'localhost:8080/api/v1/devices?switch=sw-core-01'
+curl -s -H "X-API-Key: $KEY" 'localhost:8080/api/v1/events?type=moved'
+```
+
+Two properties worth knowing:
+
+* **Secrets never come back out.** Credential responses carry `has_secret` and
+  nothing else — not the community string, not even the names of the
+  environment variables it references.
+* **The API is up before NetBox is.** A fresh NetBox spends minutes applying its
+  own migrations, and that is exactly when you want to add targets. The API only
+  needs scanspot's store.
+
+It speaks plain HTTP and has no rate limiting. Keep it on the management
+network, or put TLS in front of it. `API_ENABLED=false` turns it off entirely.
 
 ## How devices are identified
 
