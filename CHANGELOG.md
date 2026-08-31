@@ -49,6 +49,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * A store failure does not cost the NetBox sync, and a sync failure does not
     cost the stored record.
 
+### Fixed
+
+* **Credential settings from `inventory.yml` were stored unexpanded.** A profile
+  written as `snmp_version: ${SNMP_DEFAULT_VERSION:-2c}` was recorded verbatim,
+  matching neither `1` nor `2c`, so the SNMP poller fell through to v3 and every
+  v2c switch failed with *"passphrase chosen is below the length requirements of
+  the USM"*. Ordinary settings are now resolved; secrets still stay as
+  references to their variable and are never copied into the database.
+  Found by running against real hardware — no unit test would have caught it.
+* **`DRY_RUN` did not cover the store.** It gated NetBox writes only, so a run
+  meant to change nothing still persisted discoveries locally. A flag whose
+  purpose is to be inert must be inert everywhere.
+
 ### Changed
 
 * **Scan targets live in scanspot's store, not in NetBox.** NetBox still offers

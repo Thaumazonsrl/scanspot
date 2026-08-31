@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi import Depends, Header, HTTPException, Request, Security, status
+from fastapi.security import APIKeyHeader
 from sqlalchemy.orm import Session
 
 from ..store.models import ApiKey
@@ -26,6 +27,19 @@ _UNAUTHORIZED = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,
     detail="a valid API key is required",
     headers={"WWW-Authenticate": "Bearer"},
+)
+
+# Declared as a security scheme rather than a plain Header so that it lands in
+# the OpenAPI document. That is what puts the "Authorize" button in the docs UI
+# at /api/docs — without it the page renders but every call comes back 401,
+# because the browser has no way to attach the key.
+#
+# auto_error=False: a missing key is handled below, together with the Bearer
+# fallback, so both forms produce the same response.
+api_key_scheme = APIKeyHeader(
+    name="X-API-Key",
+    auto_error=False,
+    description="Paste the key printed once in the log at first start.",
 )
 
 
@@ -53,7 +67,7 @@ def _presented(x_api_key: str | None, authorization: str | None) -> str:
 
 def require_key(
     session: Session = Depends(get_session),
-    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    x_api_key: str | None = Security(api_key_scheme),
     authorization: str | None = Header(default=None),
 ) -> ApiKey:
     presented = _presented(x_api_key, authorization)

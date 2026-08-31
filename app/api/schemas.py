@@ -116,6 +116,14 @@ class TargetCreate(BaseModel):
         return value
 
 
+class CredentialUpdate(BaseModel):
+    params: dict | None = None
+    secret_refs: dict[str, str] | None = None
+    secrets: dict[str, str] | None = Field(
+        default=None, description="Write-only. Replaces the stored secrets."
+    )
+
+
 class TargetUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     address: str | None = Field(default=None, min_length=1, max_length=255)

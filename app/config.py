@@ -42,6 +42,19 @@ def env_var_reference(value) -> str | None:
     return match.group(1) if match else None
 
 
+def expand_placeholders(value):
+    """Resolve `${VAR}` / `${VAR:-default}` against the environment.
+
+    Public because the store importer needs it: a *secret* read from
+    inventory.yml is recorded as a reference to its variable and must stay
+    unexpanded, but an ordinary setting such as `snmp_version` has to be the
+    resolved value. Storing `"${SNMP_DEFAULT_VERSION:-2c}"` verbatim makes the
+    SNMP version match neither "1" nor "2c", and the poller silently falls
+    through to SNMPv3.
+    """
+    return _expand(value)
+
+
 def env_str(name: str, default: str = "") -> str:
     value = os.environ.get(name)
     return default if value is None else value.strip()

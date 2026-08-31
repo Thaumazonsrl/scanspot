@@ -15,7 +15,17 @@ from sqlalchemy.orm import Session
 
 from .. import __version__
 from ..store.crypto import SecretError
-from ..store.models import ApiKey, Endpoint, Event, Prefix, Run, Site, Target, Vlan
+from ..store.models import (
+    ApiKey,
+    CredentialProfile,
+    Endpoint,
+    Event,
+    Prefix,
+    Run,
+    Site,
+    Target,
+    Vlan,
+)
 from ..store.repository import Repository
 from . import schemas
 from .auth import get_session, require_key
@@ -73,8 +83,6 @@ def list_sites(session: Session = Depends(get_session), _key: ApiKey = Depends(r
 def list_credentials(
     session: Session = Depends(get_session), _key: ApiKey = Depends(require_key)
 ):
-    from ..store.models import CredentialProfile
-
     return session.query(CredentialProfile).order_by(CredentialProfile.name).all()
 
 
@@ -106,6 +114,67 @@ def create_credential(
         # Almost always "SCANSPOT_SECRET_KEY is not set" — a configuration
         # problem the caller can act on, not a server fault.
         raise HTTPException(409, str(exc)) from exc
+
+
+@router.patch(
+    "/credentials/{credential_id}",
+    response_model=schemas.Credential,
+    tags=["credentials"],
+)
+def update_credential(
+    credential_id: int,
+    payload: schemas.CredentialUpdate,
+    session: Session = Depends(get_session),
+    _key: ApiKey = Depends(require_key),
+):
+    profile = session.get(CredentialProfile, credential_id)
+    if profile is None:
+        raise HTTPException(404, f"no credential with id {credential_id}")
+    if payload.secrets and payload.secret_refs:
+        raise HTTPException(422, "a credential is either env_ref or inline, not both")
+
+    try:
+        return _repo(session).upsert_credential(
+            profile.name,
+            profile.kind,
+            site=session.get(Site, profile.site_id) if profile.site_id else None,
+            params=payload.params if payload.params is not None else profile.params,
+            secret_refs=payload.secret_refs,
+            secrets=payload.secrets,
+        )
+    except SecretError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.delete(
+    "/credentials/{credential_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["credentials"],
+)
+def delete_credential(
+    credential_id: int,
+    session: Session = Depends(get_session),
+    _key: ApiKey = Depends(require_key),
+):
+    profile = session.get(CredentialProfile, credential_id)
+    if profile is None:
+        raise HTTPException(404, f"no credential with id {credential_id}")
+
+    # Refuse rather than silently leave targets unpollable. The foreign key is
+    # SET NULL, so deleting would not raise — it would just stop the scan with
+    # no obvious cause.
+    users = (
+        session.query(Target).filter(Target.credential_profile_id == credential_id).all()
+    )
+    if users:
+        raise HTTPException(
+            409,
+            "still used by: " + ", ".join(t.name for t in users[:5])
+            + (" …" if len(users) > 5 else ""),
+        )
+
+    session.delete(profile)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ── targets ─────────────────────────────────────────────────────────────────

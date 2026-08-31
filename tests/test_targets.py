@@ -131,6 +131,61 @@ def test_inventory_profiles_record_the_variable_name(db, config, monkeypatch, tm
         assert repo.credential_settings(profile)["community"] == "server-secret"
 
 
+def test_non_secret_params_are_resolved_not_stored_verbatim(
+    db, config, monkeypatch, tmp_path
+):
+    """Regression: `snmp_version` was stored as the literal
+    "${SNMP_DEFAULT_VERSION:-2c}", which matches neither "1" nor "2c", so the
+    poller fell through to SNMPv3 and every v2c switch failed with
+    "passphrase below the length requirements of the USM"."""
+    inventory = tmp_path / "inventory.yml"
+    inventory.write_text(
+        "credentials:\n"
+        "  default:\n"
+        "    type: snmp\n"
+        "    snmp_version: ${SNMP_DEFAULT_VERSION:-2c}\n"
+        "    community: ${SNMP_COMMUNITY}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("INVENTORY_FILE", str(inventory))
+    monkeypatch.setenv("SNMP_DEFAULT_VERSION", "2c")
+    monkeypatch.setenv("SNMP_COMMUNITY", "public-ro")
+
+    with db.session_scope() as session:
+        repo = Repository(session)
+        site = ensure_site(session, "HQ")
+        sync_credentials(repo, config, site)
+
+        profile = repo.credential("default", site)
+        assert profile.params["snmp_version"] == "2c"
+        assert "${" not in str(profile.params)
+
+        repo.upsert_target(
+            site, name="sw-01", address="10.0.0.10", method="snmp", credential=profile
+        )
+        _, switches = load_targets(repo, config, site)
+
+    # The value the SNMP poller actually branches on.
+    assert switches[0].snmp_version == "2c"
+
+
+def test_a_default_inside_a_placeholder_is_applied(db, config, monkeypatch, tmp_path):
+    inventory = tmp_path / "inventory.yml"
+    inventory.write_text(
+        "credentials:\n  default:\n    type: snmp\n"
+        "    snmp_version: ${SNMP_DEFAULT_VERSION:-2c}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("INVENTORY_FILE", str(inventory))
+    monkeypatch.delenv("SNMP_DEFAULT_VERSION", raising=False)
+
+    with db.session_scope() as session:
+        repo = Repository(session)
+        site = ensure_site(session, "HQ")
+        sync_credentials(repo, config, site)
+        assert repo.credential("default", site).params["snmp_version"] == "2c"
+
+
 def test_a_literal_secret_in_the_yaml_is_not_copied_into_the_store(
     db, config, monkeypatch, tmp_path
 ):

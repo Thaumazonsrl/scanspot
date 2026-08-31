@@ -221,8 +221,13 @@ def _run_cycle(config: AppConfig, client: NetBoxClient, database: Database) -> d
     # exporters of this data, not the place it lives.
     run_id = None
     try:
-        run_id = _record_run(config, database, result, started, "ok", persist=True)
-        outcome["stored"] = True
+        if config.scanner.dry_run:
+            # DRY_RUN means "change nothing", and the store is something. A flag
+            # whose whole purpose is to be inert must not quietly persist.
+            log.info("[dry-run] the scanspot store is left untouched as well")
+        else:
+            run_id = _record_run(config, database, result, started, "ok", persist=True)
+            outcome["stored"] = True
     except Exception as exc:
         # A store failure must not cost the NetBox sync — that is still the
         # thing the operator is looking at today.
@@ -332,7 +337,9 @@ def describe(config: AppConfig) -> None:
     )
     log.info("static reservations : never auto-deleted")
     if config.scanner.dry_run:
-        log.warning("DRY_RUN is enabled — nothing will be written to NetBox")
+        log.warning(
+            "DRY_RUN is enabled — nothing will be written, to NetBox or to the store"
+        )
 
 
 def _handle_signal(signum, _frame) -> None:

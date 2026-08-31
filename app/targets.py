@@ -17,7 +17,14 @@ from __future__ import annotations
 
 import logging
 
-from .config import AppConfig, FortiGateConfig, SwitchConfig, env_str, env_var_reference
+from .config import (
+    AppConfig,
+    FortiGateConfig,
+    SwitchConfig,
+    env_str,
+    env_var_reference,
+    expand_placeholders,
+)
 from .store.models import SECRET_FIELDS, Site
 from .store.repository import Repository
 
@@ -106,7 +113,11 @@ def sync_credentials(repo: Repository, config: AppConfig, site: Site | None = No
                         key,
                     )
                 continue
-            params[key] = value
+            # Ordinary settings are resolved; only secrets stay as references.
+            # Storing "${SNMP_DEFAULT_VERSION:-2c}" verbatim would leave the
+            # version matching neither "1" nor "2c", and the SNMP poller would
+            # quietly attempt v3 against a v2c switch.
+            params[key] = expand_placeholders(value)
 
         repo.upsert_credential(name, kind, params=params, secret_refs=secret_refs)
         synced += 1

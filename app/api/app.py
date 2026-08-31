@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import logging
 import threading
+from pathlib import Path
 from typing import Callable
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 
 from .. import __version__
 from ..store.db import Database
@@ -49,6 +51,25 @@ def create_app(
     app.state.database = database
     app.state.scan_trigger = scan_trigger
     app.include_router(router)
+
+    ui_file = Path(__file__).parent / "static" / "ui.html"
+
+    @app.get("/", include_in_schema=False)
+    @app.get("/ui", include_in_schema=False)
+    def management_ui() -> HTMLResponse:
+        """A small management page for targets and credentials.
+
+        Deliberately one static file talking to the same /api/v1 endpoints as
+        any other client: whatever the UI can do, an integrator can do too, and
+        there is no second code path to keep in step.
+
+        The key lives in the browser's localStorage and travels as a header —
+        no cookie, so there is nothing for CSRF to attack.
+        """
+        if not ui_file.is_file():
+            return HTMLResponse("<h1>UI not bundled in this image</h1>", status_code=404)
+        return HTMLResponse(ui_file.read_text(encoding="utf-8"))
+
     return app
 
 

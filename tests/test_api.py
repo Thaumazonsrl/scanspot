@@ -243,6 +243,50 @@ def test_env_ref_credentials_do_not_expose_the_variable_names(client, auth):
     assert "SOME_PRIVATE_VAR_NAME" not in body
 
 
+def test_a_credential_can_be_updated(client, auth):
+    created = client.post(
+        "/api/v1/credentials",
+        headers=auth,
+        json={"name": "editable", "kind": "snmp", "secret_refs": {"community": "OLD_VAR"}},
+    ).json()
+
+    patched = client.patch(
+        f"/api/v1/credentials/{created['id']}",
+        headers=auth,
+        json={"params": {"snmp_version": "3"}, "secret_refs": {"community": "NEW_VAR"}},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["params"]["snmp_version"] == "3"
+    assert "NEW_VAR" not in patched.text
+
+
+def test_a_credential_in_use_cannot_be_deleted(client, auth):
+    """The foreign key is SET NULL, so deleting would not raise — it would
+    silently stop the target being polled, with no obvious cause."""
+    client.post(
+        "/api/v1/targets",
+        headers=auth,
+        json={"name": "sw-01", "address": "10.0.0.10", "method": "snmp"},
+    )
+    profile = [
+        c for c in client.get("/api/v1/credentials", headers=auth).json()
+        if c["name"] == "default"
+    ][0]
+
+    response = client.delete(f"/api/v1/credentials/{profile['id']}", headers=auth)
+    assert response.status_code == 409
+    assert "sw-01" in response.json()["detail"]
+
+
+def test_an_unused_credential_can_be_deleted(client, auth):
+    created = client.post(
+        "/api/v1/credentials",
+        headers=auth,
+        json={"name": "disposable", "kind": "snmp", "secret_refs": {"community": "V"}},
+    ).json()
+    assert client.delete(f"/api/v1/credentials/{created['id']}", headers=auth).status_code == 204
+
+
 def test_inline_and_env_ref_together_are_rejected(client, auth):
     response = client.post(
         "/api/v1/credentials",
@@ -390,6 +434,41 @@ def test_device_listing_is_paginated(client, auth, discovered):
 
 
 # ── contract ────────────────────────────────────────────────────────────────
+
+
+def test_the_docs_ui_can_authenticate(client):
+    """The security scheme is what puts the "Authorize" button in /api/docs.
+    Without it the page renders and every call returns 401, which looks like a
+    broken API rather than a missing key."""
+    document = client.get("/api/openapi.json").json()
+    schemes = document.get("components", {}).get("securitySchemes", {})
+    assert schemes, "no security scheme: /api/docs would have no Authorize button"
+
+    scheme = next(iter(schemes.values()))
+    assert scheme["type"] == "apiKey"
+    assert scheme["in"] == "header"
+    assert scheme["name"] == "X-API-Key"
+
+
+def test_protected_endpoints_declare_the_requirement(client):
+    document = client.get("/api/openapi.json").json()
+    assert document["paths"]["/api/v1/targets"]["get"].get("security")
+    # /health must stay open: a Kubernetes probe cannot carry a key.
+    assert not document["paths"]["/api/v1/health"]["get"].get("security")
+
+
+def test_the_management_ui_is_served(client):
+    for path in ("/", "/ui"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+        assert "scanspot" in response.text
+
+
+def test_the_ui_is_not_in_the_api_contract(client):
+    """It is a convenience page, not part of what integrators depend on."""
+    paths = client.get("/api/openapi.json").json()["paths"]
+    assert "/ui" not in paths and "/" not in paths
 
 
 def test_openapi_document_is_generated(client):
