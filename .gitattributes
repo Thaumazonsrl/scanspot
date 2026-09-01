@@ -1,0 +1,46 @@
+# Line endings.
+#
+# The repository is written on Windows and executed on Linux. Without this, Git
+# hands out CRLF on checkout and a shell script arrives in the container with a
+# carriage return glued to its shebang — which fails as
+#
+#     /usr/bin/env: 'bash\r': No such file or directory
+#
+# an error that names the interpreter and tells you nothing about the cause.
+
+* text=auto
+
+# Executed inside Linux containers or by a POSIX shell. LF, always.
+*.sh        text eol=lf
+*.py        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.ini       text eol=lf
+*.mako      text eol=lf
+Dockerfile  text eol=lf
+.dockerignore text eol=lf
+
+# Read by OpenSSL inside the image; a CR would corrupt the PEM block.
+*.crt       text eol=lf
+
+# Run by PowerShell on Windows, where CRLF is the convention.
+*.ps1       text eol=crlf
+
+# Documentation and markup: normalised in the repository, native on checkout.
+*.md        text
+*.html      text
+*.json      text
+
+# Never touched.
+*.png       binary
+*.jpg       binary
+*.gif       binary
+*.ico       binary
+*.gz        binary
+*.tgz       binary
+*.tar       binary
+*.db        binary
+
+# Keep generated migrations out of language statistics and collapsed in diffs:
+# they are produced by `alembic revision --autogenerate`, not written by hand.
+app/store/migrations/versions/*.py linguist-generated=true

@@ -100,7 +100,7 @@ kept.
 
 ```
 WARNING [api] A first API key has been generated. It is shown ONCE:
-WARNING [api]     scanspot_k5l99Tj601A_dJWNXJtCrZKRi5m2O9S1RBHINhVhWUk
+WARNING [api]     scanspot_EXAMPLE0KEY0DO0NOT0USE0THIS0VALUE00
 ```
 
 Then open **http://localhost:8080** and paste it.
@@ -510,6 +510,26 @@ Contributions are covered by the [DCO](CONTRIBUTING.md) — `git commit -s`. The
 is no CLA, and there will not be one.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## Support
+
+scanspot is maintained alongside client work, not as a full-time project. So
+that nobody has to guess:
+
+* **Issues** — expect a first reply within about two weeks. Reports that a
+  device is identified wrongly get fixed fastest when they include the
+  `sysObjectID` and the verbatim `sysDescr`, because those can be fixed without
+  owning the hardware. There is an issue template that asks for exactly that.
+* **Pull requests** — same timescale. A verified vendor mapping with a test is
+  usually merged as it stands.
+* **Security reports** — a different clock, see [SECURITY.md](SECURITY.md).
+* **No commercial support** is offered through this repository.
+
+If that cadence does not suit you, the licence lets you fork it, and it is
+built to be forked: the collectors know nothing about the storage layer, and
+the API carries the whole model.
 
 ---
 
