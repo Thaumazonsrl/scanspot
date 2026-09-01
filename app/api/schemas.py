@@ -212,6 +212,19 @@ class Event(_ORM):
     created_at: dt.datetime
 
 
+class RawObservation(_ORM):
+    """An unaltered device reply. Present only when CAPTURE_RAW was on."""
+
+    id: int
+    site_id: int
+    run_id: int | None
+    device: str
+    source: str
+    kind: str
+    payload: dict
+    created_at: dt.datetime
+
+
 # ── scan ────────────────────────────────────────────────────────────────────
 class ScanAccepted(BaseModel):
     accepted: bool

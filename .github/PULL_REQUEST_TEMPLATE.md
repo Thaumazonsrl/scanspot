@@ -8,6 +8,7 @@ Thanks for contributing. Keep the description short; the checklist matters more.
 
 ## Checklist
 
+- [ ] Commits are signed off (`git commit -s`) — see CONTRIBUTING.md
 - [ ] `python -m pytest` passes
 - [ ] No secrets, real IP addresses or customer hostnames in the diff, the
       tests or the PR description

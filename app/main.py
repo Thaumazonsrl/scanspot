@@ -47,7 +47,14 @@ from .logging_setup import setup_logging
 from .models import CollectionResult, SwitchInfo
 from .store.bootstrap import ensure_site, run_migrations
 from .store.db import Database
-from .store.persist import begin_run, finish_run, mark_stale_offline, persist_result
+from .store.persist import (
+    begin_run,
+    finish_run,
+    mark_stale_offline,
+    persist_raw,
+    persist_result,
+    prune_events,
+)
 from .store.repository import Repository
 from .utils import to_iso, utcnow
 
@@ -58,7 +65,7 @@ _shutdown = False
 
 # ───────────────────────────────────────────────────────────── collection ──
 def collect_all(config: AppConfig) -> CollectionResult:
-    result = CollectionResult()
+    result = CollectionResult(capture_raw=config.scanner.capture_raw)
 
     for fgt in config.fortigates:
         try:
@@ -291,8 +298,16 @@ def _record_run(
         persist_result(
             session, site, run, result, started, config.netbox.default_prefix_len
         )
+        persist_raw(session, site, run, result, config.scanner.raw_keep_runs)
         mark_stale_offline(
             session, site, started, config.lifecycle.offline_after_hours
+        )
+        prune_events(
+            session,
+            site,
+            started,
+            config.lifecycle.event_retention_days,
+            config.lifecycle.event_keep_per_type,
         )
         return run.id
 
@@ -336,6 +351,17 @@ def describe(config: AppConfig) -> None:
         "on" if config.lifecycle.enable_auto_delete else "off",
     )
     log.info("static reservations : never auto-deleted")
+    log.info(
+        "event log           : %d day(s), %d per type per device",
+        config.lifecycle.event_retention_days,
+        config.lifecycle.event_keep_per_type,
+    )
+    if config.scanner.capture_raw:
+        log.warning(
+            "CAPTURE_RAW is on — unaltered device replies are stored for the "
+            "last %d run(s). Turn it off once you are done debugging.",
+            config.scanner.raw_keep_runs,
+        )
     if config.scanner.dry_run:
         log.warning(
             "DRY_RUN is enabled — nothing will be written, to NetBox or to the store"

@@ -21,6 +21,7 @@ from ..store.models import (
     Endpoint,
     Event,
     Prefix,
+    RawObservation,
     Run,
     Site,
     Target,
@@ -403,6 +404,30 @@ def list_events(
     if type is not None:
         query = query.filter(Event.type == type)
     return query.order_by(Event.created_at.desc()).offset(offset).limit(limit).all()
+
+
+@router.get("/raw", response_model=list[schemas.RawObservation], tags=["discovery"])
+def list_raw(
+    device: str | None = None,
+    kind: str | None = None,
+    run_id: int | None = None,
+    limit: int = Query(default=50, ge=1, le=500),
+    session: Session = Depends(get_session),
+    _key: ApiKey = Depends(require_key),
+):
+    """Unaltered device replies, when `CAPTURE_RAW` is on.
+
+    Empty otherwise, and that is the normal state: this exists to work out why
+    a device was identified the way it was, without going back to the site.
+    """
+    query = session.query(RawObservation)
+    if device is not None:
+        query = query.filter(RawObservation.device == device)
+    if kind is not None:
+        query = query.filter(RawObservation.kind == kind)
+    if run_id is not None:
+        query = query.filter(RawObservation.run_id == run_id)
+    return query.order_by(RawObservation.created_at.desc()).limit(limit).all()
 
 
 # ── scan ────────────────────────────────────────────────────────────────────

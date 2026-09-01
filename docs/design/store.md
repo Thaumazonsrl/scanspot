@@ -243,13 +243,31 @@ at the new workflow.
 
 This is a **breaking change** and ships as 2.0.
 
+## Decided
+
+* **Event retention — both limits, applied together.** `EVENT_RETENTION_DAYS`
+  (365) drops anything older; `EVENT_KEEP_PER_TYPE` (1) keeps only the most
+  recent event of each type per endpoint. The second is what matters in
+  practice: a laptop on DHCP would otherwise write an `ip_added` row every day
+  for years. Nothing irreplaceable is lost, because `first_seen_at` and
+  `last_seen_at` live on the endpoint row and are never pruned — the log only
+  holds the narrative. Both are tunable; raise `EVENT_KEEP_PER_TYPE` to keep
+  more history, set either to 0 to disable that half.
+
+* **Raw observations — opt-in, off by default.** `CAPTURE_RAW` stores the
+  unaltered device replies (`sysDescr`, `sysObjectID`, ENTITY-MIB, the FDB and
+  its two translation maps, the FortiGate ARP table and DHCP configuration) in
+  `raw_observations`, readable through `GET /api/v1/raw`. Only the last
+  `RAW_KEEP_RUNS` (3) cycles are retained.
+
+  The case for it is specific to this project: vendor quirks are the hard part,
+  and diagnosing one currently means standing in front of the device again. The
+  case against is volume — a full forwarding database per switch per cycle. An
+  interruttore satisfies both: nothing is even collected when it is off, so the
+  cost is zero rather than small.
+
 ## Open questions
 
-* **Event retention.** Time-based, count-based, or per-endpoint cap? Affects
-  whether the events table needs partitioning on Postgres.
-* **Raw observations.** Do collector submissions get stored before correlation,
-  or correlated on arrival? Storing raw allows replay and debugging, at the cost
-  of volume.
 * **Roaming MACs.** A device physically moved between sites appears as two
   endpoints under `(site, mac)`. Correct for inventory, arguably wrong for asset
   tracking. Leave as-is for 2.0 and revisit if it comes up in practice.

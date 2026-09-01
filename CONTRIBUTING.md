@@ -26,6 +26,38 @@ picked up, add a rule to `_SYSDESCR_RULES` with a matching entry in `_OS_BY_RULE
 plus a test using the **real `sysDescr` string, verbatim**. Rules are ordered and
 the first match wins, so put specific patterns before general ones.
 
+## Signing off — the DCO
+
+Every commit must be signed off:
+
+```bash
+git commit -s -m "Add PEN 12345 for Example Networks"
+```
+
+That adds one line to the message:
+
+```
+Signed-off-by: Your Name <you@example.com>
+```
+
+It is a statement, not a contract: *"I wrote this, or I have the right to
+submit it, and I am content for it to be distributed under this project's
+licence."* The full text is the
+[Developer Certificate of Origin 1.1](https://developercertificate.org/).
+
+**You keep the copyright on your contribution.** You are licensing it to the
+project under Apache-2.0, not assigning it. There is no CLA to sign, and there
+will not be one: the most valuable contributions here are a one-line vendor
+mapping or a single regex, and a legal agreement in front of that is a good way
+to never receive it.
+
+The practical consequence, stated plainly so nobody is surprised: because
+contributors retain their copyright, this project **cannot be relicensed** away
+from Apache-2.0 without the agreement of everyone who has contributed. That is
+intentional — it is meant to stay open.
+
+Forgot the flag? `git commit --amend -s` fixes the last commit.
+
 ## Running the tests
 
 ```bash

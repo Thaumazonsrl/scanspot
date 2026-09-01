@@ -155,6 +155,7 @@ def collect(cfg: FortiGateConfig, result: CollectionResult) -> None:
     # A cheap call first: fail fast and loudly on credential/reachability
     # problems instead of half-populating the result.
     arp_entries = client.arp_table()
+    result.capture(cfg.name, "fortios", "monitor/network/arp", {"items": arp_entries})
 
     pools = _collect_dhcp_config(client, cfg, result)
     _collect_interfaces(client, cfg, result)
@@ -176,7 +177,12 @@ def _collect_dhcp_config(
     """Read pools AND static reservations from the DHCP server configuration."""
     pools: list[DhcpPool] = []
 
-    for server in client.dhcp_servers():
+    servers = client.dhcp_servers()
+    # The authoritative source for static reservations. When a reservation is
+    # not picked up, this is the thing to look at.
+    result.capture(cfg.name, "fortios", "cmdb/system.dhcp/server", {"items": servers})
+
+    for server in servers:
         server_id = str(server.get("id", ""))
         interface = str(server.get("interface", "") or "")
         enabled = str(server.get("status", "enable")).lower() == "enable"

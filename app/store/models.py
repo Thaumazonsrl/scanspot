@@ -352,6 +352,33 @@ class DhcpPool(Base):
     last_seen_at: Mapped[dt.datetime] = _ts(default=utcnow)
 
 
+class RawObservation(Base):
+    """What a device actually replied, before interpretation.
+
+    Off by default (`CAPTURE_RAW`). Turn it on when a device is being
+    identified wrongly and you want to work out why from your desk instead of
+    going back to the site: the walk can be re-read, and a corrected parser
+    replayed against it.
+
+    Kept for the last few runs only. A full forwarding database per switch per
+    cycle is not something to accumulate.
+    """
+
+    __tablename__ = "raw_observations"
+    __table_args__ = (Index("ix_raw_site_created", "site_id", "created_at"),)
+
+    id: Mapped[int] = _pk()
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"))
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=True
+    )
+    device: Mapped[str] = mapped_column(String(200))
+    source: Mapped[str] = mapped_column(String(20))        # snmp | fortios
+    kind: Mapped[str] = mapped_column(String(100))         # which walk / endpoint
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[dt.datetime] = _ts(default=utcnow)
+
+
 # ── backend synchronisation ─────────────────────────────────────────────────
 class BackendSync(Base):
     """Local object -> remote id, per backend.

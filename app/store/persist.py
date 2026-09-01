@@ -30,6 +30,7 @@ from .models import (
     EndpointAddress,
     Event,
     Prefix,
+    RawObservation,
     Run,
     Site,
     Vlan,
@@ -47,7 +48,21 @@ RETURNED = "returned"
 WENT_OFFLINE = "went_offline"
 
 
-def _event(session: Session, site: Site, run: Run | None, endpoint, type_: str, **payload):
+def _event(
+    session: Session,
+    site: Site,
+    run: Run | None,
+    endpoint,
+    type_: str,
+    when: datetime,
+    **payload,
+):
+    """Record a change.
+
+    `when` is the cycle's timestamp, not wall-clock time. In production the two
+    differ by seconds, but an event belongs to the cycle that observed it — and
+    a log that cannot be given a date is a log that cannot be tested.
+    """
     session.add(
         Event(
             site_id=site.id,
@@ -55,6 +70,7 @@ def _event(session: Session, site: Site, run: Run | None, endpoint, type_: str, 
             run_id=getattr(run, "id", None),
             type=type_,
             payload=payload,
+            created_at=when,
         )
     )
 
@@ -144,14 +160,17 @@ def persist_result(
 def _apply_endpoint(session, site, run, endpoint, obs, now, is_new, stats) -> None:
     if is_new:
         _event(
-            session, site, run, endpoint, DISCOVERED,
+            session, site, run, endpoint, DISCOVERED, now,
             mac=obs.mac, sources=obs.source_label,
         )
     elif endpoint.status != "active":
         # Back after having been aged out. Worth a line in the history: it is
         # usually a laptop returning, occasionally a device that was believed
         # decommissioned.
-        _event(session, site, run, endpoint, RETURNED, last_seen=str(endpoint.last_seen_at))
+        _event(
+            session, site, run, endpoint, RETURNED, now,
+            last_seen=str(endpoint.last_seen_at),
+        )
 
     if obs.location is not None:
         moved = (
@@ -160,7 +179,7 @@ def _apply_endpoint(session, site, run, endpoint, obs, now, is_new, stats) -> No
         )
         if moved and not is_new and endpoint.switch_name:
             _event(
-                session, site, run, endpoint, MOVED,
+                session, site, run, endpoint, MOVED, now,
                 **{
                     "from": f"{endpoint.switch_name}/{endpoint.switch_port}",
                     "to": f"{obs.location.switch}/{obs.location.port}",
@@ -201,7 +220,7 @@ def _apply_addresses(session, site, run, endpoint, obs, index, now, stats) -> No
                 )
             )
             stats["ips_added"] += 1
-            _event(session, site, run, endpoint, IP_ADDED, ip=ip, kind=kind)
+            _event(session, site, run, endpoint, IP_ADDED, now, ip=ip, kind=kind)
         else:
             row.kind = kind
             row.last_seen_at = now
@@ -213,7 +232,7 @@ def _apply_addresses(session, site, run, endpoint, obs, index, now, stats) -> No
     for ip, row in current.items():
         session.delete(row)
         stats["ips_removed"] += 1
-        _event(session, site, run, endpoint, IP_REMOVED, ip=ip)
+        _event(session, site, run, endpoint, IP_REMOVED, now, ip=ip)
 
 
 def _persist_prefixes(session, site, result, now) -> None:
@@ -287,6 +306,116 @@ def _persist_pools(session, site, result, now) -> None:
         row.last_seen_at = now
 
 
+# ── raw captures ────────────────────────────────────────────────────────────
+def persist_raw(
+    session: Session, site: Site, run: Run, result: CollectionResult, keep_runs: int = 3
+) -> int:
+    """Store the unaltered device replies, then drop all but the last runs.
+
+    Only ever reached when CAPTURE_RAW is on, because nothing is collected
+    otherwise.
+    """
+    if not result.raw:
+        return 0
+
+    for capture in result.raw:
+        session.add(
+            RawObservation(
+                site_id=site.id,
+                run_id=run.id,
+                device=capture.device,
+                source=capture.source,
+                kind=capture.kind,
+                payload=capture.payload,
+            )
+        )
+    session.flush()
+
+    if keep_runs > 0:
+        recent = [
+            row.id
+            for row in session.query(Run.id)
+            .filter(Run.site_id == site.id)
+            .order_by(Run.started_at.desc())
+            .limit(keep_runs)
+            .all()
+        ]
+        dropped = (
+            session.query(RawObservation)
+            .filter(
+                RawObservation.site_id == site.id,
+                RawObservation.run_id.notin_(recent),
+            )
+            .delete(synchronize_session=False)
+        )
+        if dropped:
+            log.debug("store: dropped %d raw capture(s) from older runs", dropped)
+
+    log.info(
+        "store: captured %d raw reply(ies) — CAPTURE_RAW is on", len(result.raw)
+    )
+    return len(result.raw)
+
+
+# ── pruning the event log ───────────────────────────────────────────────────
+def prune_events(
+    session: Session,
+    site: Site,
+    now: datetime,
+    retention_days: int = 365,
+    keep_per_type: int = 1,
+) -> int:
+    """Keep the event log bounded, two limits applied together.
+
+      * nothing older than `retention_days`;
+      * per endpoint and per type, only the `keep_per_type` most recent.
+
+    The second is what stops a laptop on DHCP from writing an `ip_added` row
+    every day for years: with keep_per_type=1 only the latest lease change
+    survives, and the endpoint row still says when it was first and last seen.
+
+    Set either to 0 to disable that half.
+    """
+    removed = 0
+
+    if retention_days > 0:
+        cutoff = now - timedelta(days=retention_days)
+        removed += (
+            session.query(Event)
+            .filter(Event.site_id == site.id, Event.created_at < cutoff)
+            .delete(synchronize_session=False)
+        )
+
+    if keep_per_type > 0:
+        # Grouped in Python rather than with a window function: the set is
+        # small after the date cut, and this stays portable between SQLite and
+        # PostgreSQL without a dialect-specific query.
+        rows = (
+            session.query(Event.id, Event.endpoint_id, Event.type)
+            .filter(Event.site_id == site.id, Event.endpoint_id.isnot(None))
+            .order_by(Event.created_at.desc(), Event.id.desc())
+            .all()
+        )
+        seen: dict[tuple[int, str], int] = {}
+        doomed: list[int] = []
+        for event_id, endpoint_id, type_ in rows:
+            key = (endpoint_id, type_)
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] > keep_per_type:
+                doomed.append(event_id)
+
+        for chunk in range(0, len(doomed), 500):
+            removed += (
+                session.query(Event)
+                .filter(Event.id.in_(doomed[chunk : chunk + 500]))
+                .delete(synchronize_session=False)
+            )
+
+    if removed:
+        log.info("store: pruned %d event(s)", removed)
+    return removed
+
+
 # ── ageing ──────────────────────────────────────────────────────────────────
 def mark_stale_offline(
     session: Session, site: Site, now: datetime, offline_after_hours: int
@@ -308,7 +437,7 @@ def mark_stale_offline(
     for endpoint in stale:
         endpoint.status = "offline"
         _event(
-            session, site, None, endpoint, WENT_OFFLINE,
+            session, site, None, endpoint, WENT_OFFLINE, now,
             last_seen=str(endpoint.last_seen_at),
         )
     if stale:

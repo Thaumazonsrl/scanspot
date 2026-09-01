@@ -218,6 +218,17 @@ class LifecycleSettings:
     delete_after_days: int
     enable_auto_delete: bool
     protected_tag: str
+    # Two independent limits on the event log, applied together.
+    #
+    #   event_retention_days  nothing older than this survives
+    #   event_keep_per_type   per endpoint and per event type, keep only the N
+    #                         most recent. 1 means "just the latest lease
+    #                         change, just the latest port move".
+    #
+    # Neither loses anything irreplaceable: first_seen_at and last_seen_at live
+    # on the endpoint row, which is never pruned.
+    event_retention_days: int = 365
+    event_keep_per_type: int = 1
 
 
 @dataclass
@@ -245,6 +256,14 @@ class ScannerSettings:
     snmp_v3_auth_password: str
     snmp_v3_priv_protocol: str
     snmp_v3_priv_password: str
+    # Defaulted fields must come last: a dataclass cannot have a field without
+    # a default after one that has one.
+    #
+    # Keep the unaltered device replies, for working out *why* something was
+    # identified the way it was. Off by default — a full forwarding database
+    # per switch per cycle is not something to accumulate quietly.
+    capture_raw: bool = False
+    raw_keep_runs: int = 3
 
 
 @dataclass
@@ -308,6 +327,8 @@ def load_config() -> AppConfig:
         log_level=env_str("LOG_LEVEL", "INFO").upper(),
         dry_run=env_bool("DRY_RUN", False),
         state_dir=Path(env_str("STATE_DIR", "/app/state")),
+        capture_raw=env_bool("CAPTURE_RAW", False),
+        raw_keep_runs=env_int("RAW_KEEP_RUNS", 3),
         snmp_default_version=env_str("SNMP_DEFAULT_VERSION", "2c").lower().lstrip("v"),
         snmp_community=env_str("SNMP_COMMUNITY", "public"),
         snmp_timeout=env_int("SNMP_TIMEOUT", 5),
@@ -337,6 +358,8 @@ def load_config() -> AppConfig:
         delete_after_days=env_int("DELETE_AFTER_DAYS", 7),
         enable_auto_delete=env_bool("ENABLE_AUTO_DELETE", True),
         protected_tag=env_str("PROTECTED_TAG", "protected"),
+        event_retention_days=env_int("EVENT_RETENTION_DAYS", 365),
+        event_keep_per_type=env_int("EVENT_KEEP_PER_TYPE", 1),
     )
 
     credentials, seeds = _load_inventory()

@@ -49,6 +49,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * A store failure does not cost the NetBox sync, and a sync failure does not
     cost the stored record.
 
+* **A management UI** at `/` and `/ui` — create, enable, disable and delete scan
+  targets and credential profiles from the browser. One static file talking to
+  the same `/api/v1` endpoints as any other client, so there is no second code
+  path; the key lives in `localStorage` and travels as a header, so there is no
+  cookie for CSRF to attack.
+* Credential profiles gained `PATCH` and `DELETE`. Deleting one that is still
+  in use returns 409 listing the targets: the foreign key is `SET NULL`, so the
+  delete would otherwise succeed and quietly stop those devices being polled.
+* **Event log retention.** `EVENT_RETENTION_DAYS` (365) and
+  `EVENT_KEEP_PER_TYPE` (1) are applied together — nothing older than a year,
+  and per endpoint only the most recent event of each type. Without the second,
+  a laptop on DHCP writes an `ip_added` row every day forever. Nothing
+  irreplaceable is lost: first-seen and last-seen live on the endpoint row.
+* **Raw capture for debugging** (`CAPTURE_RAW`, off by default). Stores what
+  devices actually replied — `sysDescr`, `sysObjectID`, ENTITY-MIB, the
+  forwarding database and its translation maps, the FortiGate ARP table and
+  DHCP configuration — readable through `GET /api/v1/raw`, retained for the
+  last `RAW_KEEP_RUNS` cycles. Lets a misidentified switch be diagnosed from a
+  desk instead of from in front of the device. Nothing is collected when it is
+  off, so the cost is zero rather than small.
+* Contributions are covered by the **DCO** (`git commit -s`), not a CLA:
+  the most valuable contributions here are a one-line vendor mapping, and a
+  legal agreement in front of that is a good way never to receive it.
+
 ### Fixed
 
 * **Credential settings from `inventory.yml` were stored unexpanded.** A profile
@@ -61,6 +85,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **`DRY_RUN` did not cover the store.** It gated NetBox writes only, so a run
   meant to change nothing still persisted discoveries locally. A flag whose
   purpose is to be inert must be inert everywhere.
+* **`/api/docs` could not authenticate.** The key was a plain header rather than
+  a declared security scheme, so the page rendered without an *Authorize*
+  button and every call from the browser returned 401 — indistinguishable from
+  a broken API.
+* **Events were timestamped with wall-clock time** instead of the cycle's own
+  timestamp. Seconds apart in production, but an event belongs to the cycle
+  that observed it.
 
 ### Changed
 
