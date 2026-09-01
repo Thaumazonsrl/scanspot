@@ -91,22 +91,28 @@ cd scanspot
 cp .env.example .env
 # set NETBOX_URL and NETBOX_TOKEN, plus SNMP_COMMUNITY and/or FORTIGATE_API_TOKEN
 
-docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+docker compose up -d
 docker compose logs -f scanner
 ```
 
-The log prints an API key **once** on first start. Save it: only its hash is
-kept.
+Nothing is built: the image is pulled from GitHub Container Registry.
+
+The log prints an API key **once** on first start. Save it — only its hash is
+kept, so it cannot be recovered afterwards.
 
 ```
 WARNING [api] A first API key has been generated. It is shown ONCE:
 WARNING [api]     scanspot_EXAMPLE0KEY0DO0NOT0USE0THIS0VALUE00
 ```
 
-Then open **http://localhost:8080** and paste it.
+Then open **http://localhost:8080** and paste it in.
 
-> Released versions are published to GHCR and `docker compose up -d` pulls them
-> without building. While 2.0 is unreleased, build from source as above.
+To build from source instead — contributors, or a host that cannot reach
+`ghcr.io`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
 
 Run your first cycle with `DRY_RUN=true` in `.env` if you would rather look
 before anything is written — it polls everything and logs what it *would* do,
