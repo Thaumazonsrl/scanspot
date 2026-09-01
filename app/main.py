@@ -23,10 +23,16 @@ import time
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from . import __version__
-from .backends.netbox import targets
+from . import __version__, targets
+from .api import (
+    create_app,
+    ensure_bootstrap_key,
+    log_bootstrap_key,
+    serve_in_background,
+)
 from .backends.netbox.cleanup import run_cleanup
-from .backends.netbox.client import TAG_SCAN_TARGET, NetBoxClient
+from .backends.netbox.client import NetBoxClient
+from .backends.netbox.import_targets import import_targets
 from .backends.netbox.sync import (
     build_prefix_index,
     sync_dhcp_pools,
@@ -39,6 +45,17 @@ from .collectors import fortigate, snmp
 from .config import AppConfig, ConfigError, load_config
 from .logging_setup import setup_logging
 from .models import CollectionResult, SwitchInfo
+from .store.bootstrap import ensure_site, run_migrations
+from .store.db import Database
+from .store.persist import (
+    begin_run,
+    finish_run,
+    mark_stale_offline,
+    persist_raw,
+    persist_result,
+    prune_events,
+)
+from .store.repository import Repository
 from .utils import to_iso, utcnow
 
 log = logging.getLogger("scanner")
@@ -48,7 +65,7 @@ _shutdown = False
 
 # ───────────────────────────────────────────────────────────── collection ──
 def collect_all(config: AppConfig) -> CollectionResult:
-    result = CollectionResult()
+    result = CollectionResult(capture_raw=config.scanner.capture_raw)
 
     for fgt in config.fortigates:
         try:
@@ -107,7 +124,7 @@ def cycle_lock(config: AppConfig):
         handle.close()
 
 
-def run_cycle(config: AppConfig, client: NetBoxClient) -> dict:
+def run_cycle(config: AppConfig, client: NetBoxClient, database: Database) -> dict:
     with cycle_lock(config) as acquired:
         if not acquired:
             log.warning(
@@ -115,22 +132,57 @@ def run_cycle(config: AppConfig, client: NetBoxClient) -> dict:
                 "(the heartbeat is left untouched)"
             )
             return {"status": "skipped"}
-        return _run_cycle(config, client)
+        return _run_cycle(config, client, database)
 
 
-def _run_cycle(config: AppConfig, client: NetBoxClient) -> dict:
+def prepare_store(config: AppConfig, database: Database) -> None:
+    """Create the site and the credential profiles.
+
+    Runs at startup rather than inside the first cycle, because the cycle waits
+    for NetBox. Without this the API would come up early — as designed — and
+    then refuse every write with "no site exists yet", which is exactly the
+    situation it was brought forward to avoid.
+    """
+    with database.session_scope() as session:
+        repo = Repository(session)
+        site = ensure_site(session, config.netbox.site_name)
+        targets.sync_credentials(repo, config, site)
+
+
+def prepare_targets(config: AppConfig, client: NetBoxClient, database: Database) -> None:
+    """Refresh the target list from the store, seeding or importing if empty.
+
+    Re-read every cycle so a target added through the API is picked up without
+    restarting the container — the same property the NetBox tag used to give.
+    """
+    with database.session_scope() as session:
+        repo = Repository(session)
+        site = ensure_site(session, config.netbox.site_name)
+        targets.sync_credentials(repo, config, site)
+
+        # NetBox keeps offering targets every cycle, so tagging a device still
+        # puts it under scan without a restart. One-way and idempotent: see
+        # import_targets for the ownership rule.
+        import_targets(client, repo, site, config)
+
+        # The seed is a first-run convenience only, and must not shadow devices
+        # an existing 1.x deployment already has in NetBox.
+        if repo.target_count(site) == 0:
+            targets.apply_seed(repo, config, site)
+
+        config.fortigates, config.switches = targets.load_targets(repo, config, site)
+
+
+def _run_cycle(config: AppConfig, client: NetBoxClient, database: Database) -> dict:
     started = utcnow()
     log.info("─" * 72)
     log.info("scan cycle started")
 
     outcome: dict = {"started": to_iso(started), "synced": False, "cleaned": False}
 
-    # The target list lives in NetBox, so it is re-read every cycle: a switch
-    # added from the GUI is picked up without restarting the container.
     try:
         client.bootstrap()
-        targets.seed(client, config)
-        config.fortigates, config.switches = targets.load_targets(client, config)
+        prepare_targets(config, client, database)
     except Exception as exc:
         log.exception("could not load the scan targets: %s", exc)
         outcome["status"] = "error"
@@ -140,9 +192,8 @@ def _run_cycle(config: AppConfig, client: NetBoxClient) -> dict:
 
     if not config.fortigates and not config.switches:
         log.warning(
-            "no scan target defined — add a device in NetBox, tag it '%s' and "
-            "fill in its 'Scan address' custom field",
-            TAG_SCAN_TARGET,
+            "no scan target defined — add one through the API, or tag a device "
+            "'scan-target' in NetBox and restart to import it"
         )
         outcome["status"] = "idle"
         _write_heartbeat(config, outcome, started)
@@ -168,8 +219,27 @@ def _run_cycle(config: AppConfig, client: NetBoxClient) -> dict:
             "so that existing records are not aged out by a connectivity problem"
         )
         outcome["status"] = "failed"
+        _record_run(config, database, result, started, "failed")
         _write_heartbeat(config, outcome, started)
         return outcome
+
+    # The store is written first, and unconditionally: what the network reported
+    # is recorded even if NetBox is unreachable a moment later. The backends are
+    # exporters of this data, not the place it lives.
+    run_id = None
+    try:
+        if config.scanner.dry_run:
+            # DRY_RUN means "change nothing", and the store is something. A flag
+            # whose whole purpose is to be inert must not quietly persist.
+            log.info("[dry-run] the scanspot store is left untouched as well")
+        else:
+            run_id = _record_run(config, database, result, started, "ok", persist=True)
+            outcome["stored"] = True
+    except Exception as exc:
+        # A store failure must not cost the NetBox sync — that is still the
+        # thing the operator is looking at today.
+        log.exception("could not write the scanspot store: %s", exc)
+        outcome["error"] = str(exc)[:300]
 
     try:
         index = build_prefix_index(
@@ -196,9 +266,50 @@ def _run_cycle(config: AppConfig, client: NetBoxClient) -> dict:
     duration = (utcnow() - started).total_seconds()
     outcome["status"] = "degraded" if (result.firewalls_failed or result.switches_failed) else "ok"
     outcome["duration_seconds"] = round(duration, 1)
+
+    if run_id is not None:
+        try:
+            with database.session_scope() as session:
+                finish_run(session, run_id, outcome["status"], utcnow(), round(duration, 1))
+        except Exception as exc:
+            log.warning("could not close the run record: %s", exc)
+
     log.info("scan cycle finished in %.1fs — %s", duration, outcome["status"])
     _write_heartbeat(config, outcome, started)
     return outcome
+
+
+def _record_run(
+    config: AppConfig,
+    database: Database,
+    result: CollectionResult,
+    started,
+    status: str,
+    persist: bool = False,
+) -> int | None:
+    """Open a run record, and optionally merge the collection into the store."""
+    with database.session_scope() as session:
+        site = ensure_site(session, config.netbox.site_name)
+        run = begin_run(session, site, result, started)
+        if not persist:
+            run.status = status
+            run.finished_at = utcnow()
+            return run.id
+        persist_result(
+            session, site, run, result, started, config.netbox.default_prefix_len
+        )
+        persist_raw(session, site, run, result, config.scanner.raw_keep_runs)
+        mark_stale_offline(
+            session, site, started, config.lifecycle.offline_after_hours
+        )
+        prune_events(
+            session,
+            site,
+            started,
+            config.lifecycle.event_retention_days,
+            config.lifecycle.event_keep_per_type,
+        )
+        return run.id
 
 
 def _write_heartbeat(config: AppConfig, outcome: dict, started) -> None:
@@ -217,7 +328,13 @@ def describe(config: AppConfig) -> None:
     log.info("client              : %s", config.netbox.client_name)
     log.info("netbox site         : %s", config.netbox.site_name)
     log.info("netbox url          : %s", config.netbox.url)
-    log.info("scan targets        : read from NetBox (tag '%s')", TAG_SCAN_TARGET)
+    log.info("scan targets        : scanspot store")
+    log.info(
+        "api                 : %s",
+        f"http://{config.api.host}:{config.api.port}/api/v1"
+        if config.api.enabled
+        else "disabled (API_ENABLED=false)",
+    )
     log.info(
         "credential profiles : %s",
         ", ".join(sorted(config.credentials)) or "none",
@@ -234,8 +351,21 @@ def describe(config: AppConfig) -> None:
         "on" if config.lifecycle.enable_auto_delete else "off",
     )
     log.info("static reservations : never auto-deleted")
+    log.info(
+        "event log           : %d day(s), %d per type per device",
+        config.lifecycle.event_retention_days,
+        config.lifecycle.event_keep_per_type,
+    )
+    if config.scanner.capture_raw:
+        log.warning(
+            "CAPTURE_RAW is on — unaltered device replies are stored for the "
+            "last %d run(s). Turn it off once you are done debugging.",
+            config.scanner.raw_keep_runs,
+        )
     if config.scanner.dry_run:
-        log.warning("DRY_RUN is enabled — nothing will be written to NetBox")
+        log.warning(
+            "DRY_RUN is enabled — nothing will be written, to NetBox or to the store"
+        )
 
 
 def _handle_signal(signum, _frame) -> None:
@@ -269,7 +399,35 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(config.scanner.log_level)
     describe(config)
 
+    # The container migrates its own store: no separate step for an operator to
+    # forget, and no window in which the code is newer than the schema.
+    try:
+        database = Database()
+        run_migrations(database)
+        prepare_store(config, database)
+    except Exception as exc:
+        log.exception("could not open the scanspot store: %s", exc)
+        return 4
+
     client = NetBoxClient(config.netbox, dry_run=config.scanner.dry_run)
+
+    daemon = not (args.check or args.once)
+
+    # Started before NetBox is waited on, deliberately. A fresh NetBox takes
+    # three to five minutes to apply its own migrations, and that is exactly
+    # when an operator wants /health to answer and targets to be manageable.
+    # The API only needs the store, which is already open.
+    if daemon and config.api.enabled:
+        # Issued before the server starts, so the key lands in the log above the
+        # first request rather than buried after it.
+        bootstrap_key = ensure_bootstrap_key(database)
+        if bootstrap_key:
+            log_bootstrap_key(bootstrap_key)
+        api = create_app(
+            database,
+            scan_trigger=lambda: run_cycle(config, client, database),
+        )
+        serve_in_background(api, config.api.host, config.api.port)
 
     # NetBox may still be applying migrations when the scanner starts.
     for attempt in range(1, 31):
@@ -284,11 +442,11 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(10)
 
     if args.check:
-        log.info("configuration and NetBox connectivity are OK")
+        log.info("configuration, store and NetBox connectivity are OK")
         return 0
 
     if args.once:
-        outcome = run_cycle(config, client)
+        outcome = run_cycle(config, client, database)
         return 0 if outcome.get("status") in ("ok", "degraded", "idle", "skipped") else 1
 
     signal.signal(signal.SIGTERM, _handle_signal)
@@ -298,7 +456,7 @@ def main(argv: list[str] | None = None) -> int:
     scheduler.add_job(
         run_cycle,
         trigger=IntervalTrigger(minutes=config.scanner.interval_minutes),
-        args=[config, client],
+        args=[config, client, database],
         id="scan",
         name="network scan",
         max_instances=1,          # never overlap two cycles
@@ -310,7 +468,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if config.scanner.run_on_start:
         try:
-            run_cycle(config, client)
+            run_cycle(config, client, database)
         except Exception:
             log.exception("initial cycle failed")
 

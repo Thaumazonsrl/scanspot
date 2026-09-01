@@ -42,6 +42,9 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY app /app/app
+# Required at run time: the container applies its own migrations on startup, so
+# alembic.ini and app/store/migrations/ must both be present in the image.
+COPY alembic.ini /app/alembic.ini
 
 RUN useradd --create-home --uid 10001 scanner \
     && mkdir -p /app/state \

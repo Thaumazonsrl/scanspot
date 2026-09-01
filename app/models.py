@@ -135,6 +135,21 @@ class Observation:
 
 
 @dataclass
+class RawCapture:
+    """One unaltered device reply, kept only when CAPTURE_RAW is on.
+
+    The point is being able to work out *why* a device was identified the way
+    it was, from your desk, weeks later — rather than having to stand in front
+    of it again.
+    """
+
+    device: str
+    source: str          # snmp | fortios
+    kind: str            # which walk or endpoint produced this
+    payload: dict
+
+
+@dataclass
 class CollectionResult:
     """Aggregated output of one collection pass across all devices."""
 
@@ -146,6 +161,24 @@ class CollectionResult:
     firewalls_failed: int = 0
     switches_ok: int = 0
     switches_failed: int = 0
+
+    # Nothing is collected unless this is switched on, so the cost is zero when
+    # it is off — not merely small.
+    capture_raw: bool = False
+    raw: list[RawCapture] = field(default_factory=list)
+
+    def capture(self, device: str, source: str, kind: str, payload) -> None:
+        if not self.capture_raw:
+            return
+        if isinstance(payload, dict):
+            body = payload
+        elif isinstance(payload, list):
+            body = {"items": payload}
+        else:
+            body = {"value": payload}
+        self.raw.append(
+            RawCapture(device=device, source=source, kind=kind, payload=body)
+        )
 
     def observation(self, mac: str) -> Observation:
         obs = self.observations.get(mac)

@@ -26,8 +26,33 @@ from typing import Any
 import yaml
 
 _PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+# The same thing anchored: a value that is *entirely* one placeholder can be
+# recorded in the store as a reference to that variable, so the secret itself
+# never reaches the database.
+_WHOLE_PLACEHOLDER = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}$")
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+def env_var_reference(value) -> str | None:
+    """Return VAR if `value` is exactly `${VAR}` or `${VAR:-default}`."""
+    if value is None:
+        return None
+    match = _WHOLE_PLACEHOLDER.match(str(value).strip())
+    return match.group(1) if match else None
+
+
+def expand_placeholders(value):
+    """Resolve `${VAR}` / `${VAR:-default}` against the environment.
+
+    Public because the store importer needs it: a *secret* read from
+    inventory.yml is recorded as a reference to its variable and must stay
+    unexpanded, but an ordinary setting such as `snmp_version` has to be the
+    resolved value. Storing `"${SNMP_DEFAULT_VERSION:-2c}"` verbatim makes the
+    SNMP version match neither "1" nor "2c", and the poller silently falls
+    through to SNMPv3.
+    """
+    return _expand(value)
 
 
 def env_str(name: str, default: str = "") -> str:
@@ -193,6 +218,24 @@ class LifecycleSettings:
     delete_after_days: int
     enable_auto_delete: bool
     protected_tag: str
+    # Two independent limits on the event log, applied together.
+    #
+    #   event_retention_days  nothing older than this survives
+    #   event_keep_per_type   per endpoint and per event type, keep only the N
+    #                         most recent. 1 means "just the latest lease
+    #                         change, just the latest port move".
+    #
+    # Neither loses anything irreplaceable: first_seen_at and last_seen_at live
+    # on the endpoint row, which is never pruned.
+    event_retention_days: int = 365
+    event_keep_per_type: int = 1
+
+
+@dataclass
+class ApiSettings:
+    enabled: bool
+    host: str
+    port: int
 
 
 @dataclass
@@ -213,6 +256,14 @@ class ScannerSettings:
     snmp_v3_auth_password: str
     snmp_v3_priv_protocol: str
     snmp_v3_priv_password: str
+    # Defaulted fields must come last: a dataclass cannot have a field without
+    # a default after one that has one.
+    #
+    # Keep the unaltered device replies, for working out *why* something was
+    # identified the way it was. Off by default — a full forwarding database
+    # per switch per cycle is not something to accumulate quietly.
+    capture_raw: bool = False
+    raw_keep_runs: int = 3
 
 
 @dataclass
@@ -236,6 +287,9 @@ class AppConfig:
     netbox: NetBoxSettings
     lifecycle: LifecycleSettings
     scanner: ScannerSettings
+    api: ApiSettings = field(
+        default_factory=lambda: ApiSettings(enabled=True, host="0.0.0.0", port=8080)
+    )
     # name -> raw profile dict (already expanded from ${VAR})
     credentials: dict[str, dict] = field(default_factory=dict)
     seeds: list[SeedEntry] = field(default_factory=list)
@@ -273,6 +327,8 @@ def load_config() -> AppConfig:
         log_level=env_str("LOG_LEVEL", "INFO").upper(),
         dry_run=env_bool("DRY_RUN", False),
         state_dir=Path(env_str("STATE_DIR", "/app/state")),
+        capture_raw=env_bool("CAPTURE_RAW", False),
+        raw_keep_runs=env_int("RAW_KEEP_RUNS", 3),
         snmp_default_version=env_str("SNMP_DEFAULT_VERSION", "2c").lower().lstrip("v"),
         snmp_community=env_str("SNMP_COMMUNITY", "public"),
         snmp_timeout=env_int("SNMP_TIMEOUT", 5),
@@ -302,6 +358,8 @@ def load_config() -> AppConfig:
         delete_after_days=env_int("DELETE_AFTER_DAYS", 7),
         enable_auto_delete=env_bool("ENABLE_AUTO_DELETE", True),
         protected_tag=env_str("PROTECTED_TAG", "protected"),
+        event_retention_days=env_int("EVENT_RETENTION_DAYS", 365),
+        event_keep_per_type=env_int("EVENT_KEEP_PER_TYPE", 1),
     )
 
     credentials, seeds = _load_inventory()
@@ -360,13 +418,47 @@ def load_config() -> AppConfig:
             )
         )
 
+    api = ApiSettings(
+        enabled=env_bool("API_ENABLED", True),
+        # 0.0.0.0 because the container has no other useful interface; expose
+        # the port deliberately in compose, and put TLS in front of it if it
+        # leaves the management network.
+        host=env_str("API_HOST", "0.0.0.0"),
+        port=env_int("API_PORT", 8080),
+    )
+
     return AppConfig(
         netbox=netbox,
         lifecycle=lifecycle,
         scanner=scanner,
+        api=api,
         credentials=credentials,
         seeds=seeds,
     )
+
+
+def load_raw_credentials() -> dict[str, dict]:
+    """The `credentials` block of inventory.yml exactly as written.
+
+    Unexpanded on purpose: importing a profile into the store needs to know
+    that a value is `${SNMP_COMMUNITY}` rather than what that expands to, so it
+    can be stored as a reference instead of a copy of the secret.
+    """
+    path = Path(env_str("INVENTORY_FILE", "/app/inventory.yml"))
+    if not path.is_file():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle) or {}
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(name).strip(): profile
+        for name, profile in (raw.get("credentials") or {}).items()
+        if isinstance(profile, dict)
+    }
 
 
 def _load_inventory() -> tuple[dict[str, dict], list[SeedEntry]]:

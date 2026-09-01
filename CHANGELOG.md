@@ -7,6 +7,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+* **Local store** (`app/store/`) — SQLAlchemy models, engine with a configurable
+  DSN (`SCANSPOT_DB_URL`, SQLite by default, PostgreSQL opt-in), Fernet
+  encryption for credential secrets, and Alembic migrations applied by the
+  container itself on startup. Schema and rationale: `docs/design/store.md`.
+* `site` is a first-class dimension: identity is `(site_id, mac)`, so the same
+  address space and the same hardware may appear at more than one office.
+* Credential profiles support two storage modes: `inline` (encrypted in the
+  database, manageable without a restart) and `env_ref` (the value stays in the
+  environment, for Kubernetes Secrets and Vault users). Secrets are a mapping,
+  so SNMPv3's two passphrases are first-class rather than a special case.
+* Credential profiles defined in `inventory.yml` as `${VAR}` are recorded as
+  *references* to that variable — the secret itself is never copied into the
+  database.
+
+* **HTTP API** (`app/api/`, FastAPI) served from the same process as the
+  scheduler, so the container stays a single unit. Manage scan targets and
+  credential profiles, trigger a scan, and read health. OpenAPI document at
+  `/api/openapi.json`, docs at `/api/docs`.
+  * Authentication by API key (`X-API-Key` or `Authorization: Bearer`), hashed
+    with SHA-256. A first key is generated on startup and logged **once**.
+  * `/api/v1/health` needs no key — a Kubernetes probe cannot carry one — and
+    exposes no infrastructure detail, not even the database password.
+  * **Secrets are never returned.** Credential responses carry `has_secret` and
+    not the value, nor the names of the environment variables referenced.
+  * The API starts *before* NetBox is waited on. A fresh NetBox takes minutes to
+    migrate, and that is precisely when targets need to be manageable.
+* **Discovery is persisted to the store**, before the backend sync and
+  unconditionally: what the network reported is recorded even when NetBox is
+  unreachable. Backends are exporters of this data, not the place it lives.
+  * `endpoints` / `endpoint_addresses` hold current state, one row per
+    `(site, mac)`; `events` is an append-only change log — discovered, moved,
+    ip_added, ip_removed, went_offline, returned. No per-cycle snapshot, which
+    at a few thousand endpoints would be millions of rows a month.
+  * Endpoints not seen for `OFFLINE_AFTER_HOURS` are flagged offline in the
+    store. Nothing is deleted there: the history is the reason it exists.
+  * Read endpoints: `/devices`, `/devices/{mac}`, `/prefixes`, `/vlans`,
+    `/runs`, `/events`, all filterable and paginated.
+  * A store failure does not cost the NetBox sync, and a sync failure does not
+    cost the stored record.
+
+* **A management UI** at `/` and `/ui` — create, enable, disable and delete scan
+  targets and credential profiles from the browser. One static file talking to
+  the same `/api/v1` endpoints as any other client, so there is no second code
+  path; the key lives in `localStorage` and travels as a header, so there is no
+  cookie for CSRF to attack.
+* Credential profiles gained `PATCH` and `DELETE`. Deleting one that is still
+  in use returns 409 listing the targets: the foreign key is `SET NULL`, so the
+  delete would otherwise succeed and quietly stop those devices being polled.
+* **Event log retention.** `EVENT_RETENTION_DAYS` (365) and
+  `EVENT_KEEP_PER_TYPE` (1) are applied together — nothing older than a year,
+  and per endpoint only the most recent event of each type. Without the second,
+  a laptop on DHCP writes an `ip_added` row every day forever. Nothing
+  irreplaceable is lost: first-seen and last-seen live on the endpoint row.
+* **Raw capture for debugging** (`CAPTURE_RAW`, off by default). Stores what
+  devices actually replied — `sysDescr`, `sysObjectID`, ENTITY-MIB, the
+  forwarding database and its translation maps, the FortiGate ARP table and
+  DHCP configuration — readable through `GET /api/v1/raw`, retained for the
+  last `RAW_KEEP_RUNS` cycles. Lets a misidentified switch be diagnosed from a
+  desk instead of from in front of the device. Nothing is collected when it is
+  off, so the cost is zero rather than small.
+* Contributions are covered by the **DCO** (`git commit -s`), not a CLA:
+  the most valuable contributions here are a one-line vendor mapping, and a
+  legal agreement in front of that is a good way never to receive it.
+
+### Fixed
+
+* **Credential settings from `inventory.yml` were stored unexpanded.** A profile
+  written as `snmp_version: ${SNMP_DEFAULT_VERSION:-2c}` was recorded verbatim,
+  matching neither `1` nor `2c`, so the SNMP poller fell through to v3 and every
+  v2c switch failed with *"passphrase chosen is below the length requirements of
+  the USM"*. Ordinary settings are now resolved; secrets still stay as
+  references to their variable and are never copied into the database.
+  Found by running against real hardware — no unit test would have caught it.
+* **`DRY_RUN` did not cover the store.** It gated NetBox writes only, so a run
+  meant to change nothing still persisted discoveries locally. A flag whose
+  purpose is to be inert must be inert everywhere.
+* **`/api/docs` could not authenticate.** The key was a plain header rather than
+  a declared security scheme, so the page rendered without an *Authorize*
+  button and every call from the browser returned 401 — indistinguishable from
+  a broken API.
+* **Events were timestamped with wall-clock time** instead of the cycle's own
+  timestamp. Seconds apart in production, but an event belongs to the cycle
+  that observed it.
+
+### Changed
+
+* **Scan targets live in scanspot's store, not in NetBox.** NetBox still offers
+  them: devices tagged `scan-target` are imported every cycle, so the workflow
+  is unchanged from a user's point of view. Ownership is now explicit — imported
+  targets are refreshed from NetBox and disabled when the tag goes away, targets
+  created any other way are never touched by the import, and a NetBox outage
+  disables nothing.
+* `app/backends/netbox/targets.py` is gone. Loading lives in `app/targets.py`
+  (backend-neutral); the one-shot 1.x import lives in
+  `app/backends/netbox/import_targets.py`.
+* The `inventory.yml` seed now creates targets in the store instead of NetBox
+  devices, and `state/seeded.json` is no longer used — a target with
+  `source="seed"` records the same thing.
+
 ### Planned
 
 * A formal backend interface. The package is already split so that collectors

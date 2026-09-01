@@ -226,6 +226,14 @@ def collect(cfg: SwitchConfig, result: CollectionResult) -> SwitchInfo:
     info.identity = _probe_identity(cfg, info)
     log.info("[%s] %s", cfg.name, info.identity.describe())
 
+    # The three things that decide how a device is identified. When a switch
+    # comes out wrong, these are what you want to re-read.
+    result.capture(cfg.name, "snmp", "sysDescr", {"value": info.sys_descr})
+    result.capture(
+        cfg.name, "snmp", "sysObjectID", {"value": info.identity.sys_object_id}
+    )
+    result.capture(cfg.name, "snmp", "entity-mib", _entity_rows(cfg))
+
     # Let the discovered vendor drive the MAC-table strategy when the operator
     # did not pin one: a Cisco found by sysObjectID gets the per-VLAN walk on
     # this very cycle, without anybody having to type "cisco" anywhere.
@@ -246,6 +254,24 @@ def collect(cfg: SwitchConfig, result: CollectionResult) -> SwitchInfo:
     _merge_l3_interfaces(cfg, if_names, result)
 
     entries = _read_fdb(cfg, base_port_ifindex)
+
+    # The MAC table and the two maps used to translate it. Almost every
+    # "everything is on one port" or "no MACs at all" report comes down to one
+    # of these three.
+    result.capture(
+        cfg.name, "snmp", "fdb",
+        {"entries": [
+            {"mac": e.mac, "bridge_port": e.bridge_port, "vlan": e.vlan}
+            for e in entries
+        ]},
+    )
+    result.capture(
+        cfg.name, "snmp", "bridge-port-ifindex",
+        {str(k): v for k, v in base_port_ifindex.items()},
+    )
+    result.capture(cfg.name, "snmp", "if-names", {str(k): v for k, v in if_names.items()})
+    result.capture(cfg.name, "snmp", "vlans", info.vlans)
+
     _merge_fdb(cfg, entries, base_port_ifindex, if_names, result)
     _merge_snmp_arp(cfg, result)
 

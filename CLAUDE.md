@@ -33,16 +33,29 @@ There is no linter and no formatter. The validation loop for a change is:
 ### One cycle (`app/main.py::_run_cycle`)
 
 ```
-targets.load_targets      read the device list OUT OF NetBox (every cycle)
+prepare_targets           store → poller configs (NetBox import runs first)
   ↓
 collect_all               fortigate.collect (REST) + snmp.collect (net-snmp CLI)
   ↓                       → one CollectionResult, keyed by MAC
-sync_vlans → sync_prefixes → sync_dhcp_pools → sync_infrastructure → sync_endpoints
+_record_run               ★ STORE FIRST — runs, endpoints, addresses, events,
+  ↓                         prefixes, vlans, pools. Unconditional.
+sync_* (NetBox)           the backend, as an exporter of what was just stored
   ↓
-run_cleanup               age out stale records
+run_cleanup               age out stale NetBox records
   ↓
-_write_heartbeat          /app/state/last_run.json — the healthcheck's liveness proof
+finish_run                close the run row (status, duration)
+  ↓
+_write_heartbeat          /app/state/last_run.json — the healthcheck's liveness
 ```
+
+**Order matters.** The store is written before the backend and independently of
+it: what the network reported survives a NetBox outage, and a store failure does
+not cost the NetBox sync. Inverting this would make NetBox the source of truth
+again and undo the whole 2.0 direction.
+
+The heartbeat file and the `runs` table both exist on purpose. The file is the
+container healthcheck's liveness proof — cheap, no database needed. The table is
+the history the API serves.
 
 ### The seam that matters
 
@@ -120,11 +133,32 @@ An unmapped IANA enterprise number yields an `Enterprise <n>` placeholder and a
 log line. Only add **verified** mappings to `ENTERPRISES` — a wrong one writes a
 wrong vendor into a customer database, which is worse than an honest placeholder.
 
-## Direction (not yet public — keep out of README)
+### Data retention
 
-The README deliberately claims **NetBox only**. Do not advertise the following
-until it ships; early adopters arriving for Nautobot and finding NetBox costs
-more credibility than the feature is worth.
+Two mechanisms, both decided and implemented — do not add a third without a
+reason, and do not quietly loosen these defaults:
+
+* **Event log**: `EVENT_RETENTION_DAYS` (365) and `EVENT_KEEP_PER_TYPE` (1)
+  applied together in `persist.prune_events`. The second is the one that
+  matters: without it a laptop on DHCP writes an `ip_added` row every day
+  forever. Safe because `first_seen_at`/`last_seen_at` live on the endpoint row
+  and are never pruned — the log holds only the narrative.
+* **Raw captures**: `CAPTURE_RAW` (off) stores unaltered device replies for
+  `RAW_KEEP_RUNS` (3) cycles. **Nothing is collected when it is off** —
+  `CollectionResult.capture()` returns immediately — so the cost is zero rather
+  than small. Keep it that way: a hot path that allocates when a debug feature
+  is disabled is a debug feature that gets disabled permanently.
+
+Events carry the *cycle's* timestamp, not wall-clock. They belong to the run
+that observed them, and a log that cannot be given a date cannot be tested.
+
+## Direction (roadmap — not claimed in the README until it ships)
+
+The README describes scanspot as a discovery service with its own store, NetBox
+as the built-in exporter, and the API as the general integration surface — all
+of which is shipped and testable. It does **not** claim Nautobot or phpIPAM.
+Keep it that way until they exist: early adopters arriving for a backend that
+is not there cost more credibility than the feature is worth.
 
 The intended end state is *a network discovery service with pluggable
 backends*, not a NetBox tool:
@@ -148,14 +182,61 @@ backends*, not a NetBox tool:
    Handle this with explicit capability flags (`supports_dcim`,
    `supports_custom_fields`), not scattered `try/except`. Note that phpIPAM is a
    perfectly good *source* of scan scope even though it is a poor *sink*.
-5. **Local store of record (SQLite).** The unlock for everything else. Scan
-   targets currently live in NetBox, which is elegant only while NetBox is
-   present — phpIPAM has nowhere to keep them. Once scanspot owns its own state:
-   targets live there, the API serves from there, cleanup runs against local
-   state instead of querying a remote IPAM, and backends become exporters rather
-   than three systems of record kept in sync.
-6. **Read/write API** (FastAPI). `GET` observations/devices/targets, `POST`
-   targets and scan triggers, API-key auth. Depends on step 5.
+5. **Local store of record.** ✅ *Built.* Schema and rationale in
+   **`docs/design/store.md`** — read that before touching this area.
+   SQLite by default, PostgreSQL opt-in via `SCANSPOT_DB_URL`, never the
+   backend's own database. `site` is a first-class dimension, so identity is
+   `(site, mac)`. Migrations are applied by the container on startup.
+
+   **Target ownership is the rule to preserve.** The store is authoritative.
+   NetBox *offers* targets — `import_targets` runs every cycle, one-way — and:
+
+   * `source="imported"` targets belong to NetBox: refreshed from it, disabled
+     when the tag disappears;
+   * targets created any other way are never touched by the import;
+   * a failed NetBox fetch disables **nothing** — an outage must not look like
+     "every device was untagged".
+
+   There is deliberately no two-way sync: a target in the store but absent from
+   NetBox was either deleted there or created here, and nothing in the data
+   distinguishes the two.
+6. **Read/write API** (FastAPI). ✅ *Built* (`app/api/`), served from the
+   scheduler's own process so the container stays one unit. Targets,
+   credentials, health, scan triggering, and the discovery reads — `/devices`,
+   `/prefixes`, `/vlans`, `/runs`, `/events`.
+
+   The web UI (`app/api/static/ui.html`) is one static file consuming those same
+   endpoints. There is deliberately no privileged internal path: whatever the UI
+   can do, an integrator can do too, and there is no second code path to keep in
+   step. `examples/exporters/` shows the pattern for third parties and is
+   explicitly unsupported.
+
+   Invariants for this area:
+   * `/health` stays unauthenticated and leaks nothing (the DSN is redacted).
+   * **No endpoint ever returns a secret**, including the names of referenced
+     environment variables.
+   * The API carries the **whole** domain model. Trimming it to what NetBox
+     accepts would rob third-party integrations of serials, VLANs and
+     switch-port location — the parts that are hard to get and worth having.
+   * The API starts *before* the NetBox wait loop. Reordering that would
+     reintroduce the bug where a fresh NetBox makes targets unmanageable for
+     minutes.
+   * Imported targets are read-only over the API: editing one is refused,
+     because the next import would revert it.
+
+   **The API exposes the full domain model, not a NetBox-shaped subset.**
+   First-party backends (NetBox, later Nautobot) are ours to maintain; everyone
+   else integrates over the API — LibreNMS, Zabbix, an in-house CMDB. Trimming
+   the payload to what NetBox can hold would silently rob those integrators of
+   serials, VLANs and switch-port location. Contract stability matters more here
+   than for first-party code: we can refactor our own exporter, not theirs.
+   Webhooks/events belong next to this, so integrating does not mean polling.
+   `examples/exporters/` carries unsupported sample scripts to show the shape.
+7. **Distributed collectors.** A remote agent is `app/collectors/` plus
+   `app/models.py` and nothing else — no backend, no store — POSTing a
+   `CollectionResult` over HTTPS to the central instance. Push, not pull: remote
+   sites sit behind NAT. Each collector gets its own site-scoped API key, and
+   must buffer locally when the WAN is down.
 
 "Monitor" in project descriptions means **tracking and status** — first seen,
 last seen, offline — not health polling or alerting. scanspot is not an NMS and
@@ -165,9 +246,16 @@ should not grow into one.
 
 The cycle lock is an `fcntl` lock on a file in the state volume. It serialises
 cycles **within one container** and does nothing across pods. Two replicas will
-scan and write simultaneously. Before supporting multi-replica deployments this
-needs a real distributed lock (a lease in the backend, or Kubernetes
-`coordination.k8s.io/Lease`). Until then: `replicas: 1`.
+scan and write simultaneously.
+
+The 2.0 store answers this, and the two choices travel together:
+
+| `SCANSPOT_DB_URL` | Lock | Deployment |
+|---|---|---|
+| SQLite (default) | `fcntl` on the state volume | single node, `replicas: 1` |
+| PostgreSQL | `pg_advisory_lock()` | multi-replica safe |
+
+Until the store lands: `replicas: 1`, no exceptions.
 
 `python -m app.healthcheck` works as-is as an exec liveness probe.
 

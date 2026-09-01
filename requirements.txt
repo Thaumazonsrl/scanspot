@@ -3,3 +3,18 @@ requests>=2.31,<3.0
 urllib3>=2.0,<3.0
 PyYAML>=6.0,<7.0
 APScheduler>=3.10,<4.0
+
+# ── local store (2.0) ───────────────────────────────────────────────────────
+SQLAlchemy>=2.0,<3.0
+alembic>=1.13,<2.0
+# Fernet, for credential secrets stored inline in the database.
+cryptography>=42.0
+# PostgreSQL driver. Shipped even though SQLite is the default so that
+# SCANSPOT_DB_URL=postgresql://… works without rebuilding the image.
+psycopg[binary]>=3.1,<4.0
+
+# ── API (2.0) ───────────────────────────────────────────────────────────────
+# Chosen for the OpenAPI document it generates for free: the whole point of the
+# API is that other systems consume it, and a hand-written contract rots.
+fastapi>=0.110,<1.0
+uvicorn>=0.27,<1.0

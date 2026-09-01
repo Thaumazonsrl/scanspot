@@ -1,0 +1,317 @@
+<!doctype html>
+<!--
+  Minimal management UI.
+
+  One file, no framework, no build step, no bundler. It talks to the same
+  /api/v1 endpoints as any other client, which keeps it honest: anything the UI
+  can do, an integrator can do too.
+
+  The API key lives in localStorage and is sent as a header. No cookie, so
+  there is nothing for CSRF to attack.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>scanspot</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --ink: #1b1f24; --muted: #6a737d;
+    --line: #dfe3e8; --accent: #2563eb; --ok: #15803d; --warn: #b45309;
+    --bad: #b91c1c; --chip: #eef2f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a; --panel: #1c2024; --ink: #e6e8ea; --muted: #9aa4ae;
+      --line: #2c3238; --accent: #60a5fa; --ok: #4ade80; --warn: #fbbf24;
+      --bad: #f87171; --chip: #262b31;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  header { display:flex; align-items:center; gap:16px; padding:14px 20px;
+           background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; font-weight:600; letter-spacing:.2px; }
+  header .status { margin-left:auto; color:var(--muted); font-size:12px; }
+  nav { display:flex; gap:4px; padding:0 20px; background:var(--panel);
+        border-bottom:1px solid var(--line); }
+  nav button { border:0; background:none; color:var(--muted); cursor:pointer;
+               padding:10px 14px; font:inherit; border-bottom:2px solid transparent; }
+  nav button.on { color:var(--ink); border-bottom-color:var(--accent); }
+  main { padding:20px; max-width:1100px; margin:0 auto; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+          padding:16px; margin-bottom:16px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.6px;
+             color:var(--muted); margin:0 0 12px; font-weight:600; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line);
+          vertical-align:middle; }
+  th { color:var(--muted); font-weight:600; font-size:12px;
+       text-transform:uppercase; letter-spacing:.4px; }
+  td.mono, .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; }
+  .chip { display:inline-block; padding:1px 8px; border-radius:10px;
+          background:var(--chip); font-size:12px; color:var(--muted); }
+  .chip.ok { color:var(--ok); } .chip.off { color:var(--bad); }
+  .chip.warn { color:var(--warn); }
+  button.act { border:1px solid var(--line); background:var(--panel); color:var(--ink);
+               border-radius:6px; padding:4px 10px; cursor:pointer; font:inherit;
+               font-size:13px; }
+  button.act:hover { border-color:var(--accent); color:var(--accent); }
+  button.act:disabled { opacity:.4; cursor:not-allowed; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.primary:hover { opacity:.9; color:#fff; }
+  form.row { display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; }
+  label { display:flex; flex-direction:column; gap:4px; font-size:12px;
+          color:var(--muted); }
+  input,select { background:var(--bg); color:var(--ink); border:1px solid var(--line);
+                 border-radius:6px; padding:6px 8px; font:inherit; min-width:150px; }
+  .msg { padding:10px 12px; border-radius:6px; margin-bottom:12px; display:none; }
+  .msg.show { display:block; }
+  .msg.err { background:rgba(185,28,28,.12); color:var(--bad); }
+  .msg.ok  { background:rgba(21,128,61,.12); color:var(--ok); }
+  .hint { color:var(--muted); font-size:12px; margin:6px 0 0; }
+  .empty { color:var(--muted); padding:14px 10px; }
+  #gate { max-width:420px; margin:80px auto; }
+</style>
+</head>
+<body>
+
+<div id="gate" class="card" hidden>
+  <h2>API key</h2>
+  <p class="hint">Printed once in the container log at first start.</p>
+  <form class="row" onsubmit="saveKey(event)">
+    <label style="flex:1">
+      <input id="keyInput" type="password" placeholder="scanspot_…" autocomplete="off" required>
+    </label>
+    <button class="act primary" type="submit">Enter</button>
+  </form>
+  <div id="gateErr" class="msg err"></div>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <h1>scanspot</h1>
+    <span class="status" id="status">…</span>
+  </header>
+  <nav>
+    <button class="on" data-tab="targets" onclick="show('targets')">Targets</button>
+    <button data-tab="credentials" onclick="show('credentials')">Credentials</button>
+  </nav>
+  <main>
+    <div id="msg" class="msg"></div>
+
+    <section id="tab-targets">
+      <div class="card">
+        <h2>Add a target</h2>
+        <form class="row" onsubmit="addTarget(event)">
+          <label>Name<input id="tName" required placeholder="sw-core-01"></label>
+          <label>Address<input id="tAddr" required placeholder="10.0.0.10"></label>
+          <label>Method
+            <select id="tMethod">
+              <option value="snmp">SNMP</option>
+              <option value="fortios">FortiGate REST</option>
+            </select>
+          </label>
+          <label>Credential<select id="tCred"></select></label>
+          <label>Vendor<input id="tVendor" placeholder="auto"></label>
+          <button class="act primary" type="submit">Add</button>
+        </form>
+      </div>
+      <div class="card">
+        <h2>Targets</h2>
+        <table><thead><tr>
+          <th>Name</th><th>Address</th><th>Method</th><th>Origin</th>
+          <th>State</th><th></th>
+        </tr></thead><tbody id="targets"></tbody></table>
+      </div>
+    </section>
+
+    <section id="tab-credentials" hidden>
+      <div class="card">
+        <h2>Add a credential profile</h2>
+        <form class="row" onsubmit="addCred(event)">
+          <label>Name<input id="cName" required placeholder="servers-ro"></label>
+          <label>Kind
+            <select id="cKind" onchange="credFields()">
+              <option value="snmp">SNMP</option>
+              <option value="fortios">FortiGate REST</option>
+            </select>
+          </label>
+          <label>Storage
+            <select id="cMode" onchange="credFields()">
+              <option value="env_ref">Environment variable</option>
+              <option value="inline">Stored encrypted</option>
+            </select>
+          </label>
+          <label id="lblVer">SNMP version
+            <select id="cVer"><option>2c</option><option>1</option><option>3</option></select>
+          </label>
+          <label id="lblSecret">Community<input id="cSecret" required></label>
+          <button class="act primary" type="submit">Add</button>
+        </form>
+        <p class="hint" id="credHint"></p>
+      </div>
+      <div class="card">
+        <h2>Credential profiles</h2>
+        <table><thead><tr>
+          <th>Name</th><th>Kind</th><th>Storage</th><th>Settings</th>
+          <th>Secret</th><th></th>
+        </tr></thead><tbody id="creds"></tbody></table>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const API = '/api/v1';
+let KEY = localStorage.getItem('scanspot_key') || '';
+let CREDS = [];
+
+function headers() { return {'X-API-Key': KEY, 'Content-Type': 'application/json'}; }
+
+async function call(path, opts = {}) {
+  const res = await fetch(API + path, {headers: headers(), ...opts});
+  if (res.status === 401) { logout(); throw new Error('key rejected'); }
+  if (res.status === 204) return null;
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail ? JSON.stringify(body.detail) : res.statusText);
+  return body;
+}
+
+function note(text, kind = 'err') {
+  const el = document.getElementById('msg');
+  el.textContent = text;
+  el.className = 'msg show ' + kind;
+  if (kind === 'ok') setTimeout(() => el.className = 'msg', 3000);
+}
+
+function logout() {
+  localStorage.removeItem('scanspot_key'); KEY = '';
+  document.getElementById('app').hidden = true;
+  document.getElementById('gate').hidden = false;
+}
+
+async function saveKey(e) {
+  e.preventDefault();
+  KEY = document.getElementById('keyInput').value.trim();
+  try {
+    await call('/targets');
+    localStorage.setItem('scanspot_key', KEY);
+    start();
+  } catch {
+    const err = document.getElementById('gateErr');
+    err.textContent = 'That key was not accepted.';
+    err.className = 'msg err show';
+  }
+}
+
+function show(tab) {
+  for (const b of document.querySelectorAll('nav button'))
+    b.classList.toggle('on', b.dataset.tab === tab);
+  document.getElementById('tab-targets').hidden = tab !== 'targets';
+  document.getElementById('tab-credentials').hidden = tab !== 'credentials';
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"]/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+async function refresh() {
+  const health = await fetch(API + '/health').then(r => r.json());
+  document.getElementById('status').textContent =
+    `${health.devices} devices · ${health.targets} targets · last run ` +
+    (health.last_run_status || 'never');
+
+  CREDS = await call('/credentials');
+  const sel = document.getElementById('tCred');
+  sel.innerHTML = CREDS.map(c => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join('');
+
+  const targets = await call('/targets');
+  document.getElementById('targets').innerHTML = targets.length ? targets.map(t => `
+    <tr>
+      <td>${esc(t.name)}</td>
+      <td class="mono">${esc(t.address)}</td>
+      <td>${esc(t.method)}</td>
+      <td><span class="chip ${t.source === 'imported' ? 'warn' : ''}">${esc(t.source)}</span></td>
+      <td><span class="chip ${t.enabled ? 'ok' : 'off'}">${t.enabled ? 'enabled' : 'disabled'}</span></td>
+      <td style="text-align:right">
+        ${t.source === 'imported'
+          ? '<span class="chip">managed in NetBox</span>'
+          : `<button class="act" onclick="toggle(${t.id}, ${!t.enabled})">${t.enabled ? 'Disable' : 'Enable'}</button>
+             <button class="act" onclick="delTarget(${t.id}, '${esc(t.name)}')">Delete</button>`}
+      </td>
+    </tr>`).join('') : '<tr><td colspan="6" class="empty">No targets yet.</td></tr>';
+
+  document.getElementById('creds').innerHTML = CREDS.length ? CREDS.map(c => `
+    <tr>
+      <td>${esc(c.name)}</td>
+      <td>${esc(c.kind)}</td>
+      <td><span class="chip">${c.storage === 'inline' ? 'encrypted' : 'env var'}</span></td>
+      <td class="mono">${esc(Object.entries(c.params).map(([k, v]) => k + '=' + v).join(' ') || '—')}</td>
+      <td><span class="chip ${c.has_secret ? 'ok' : 'off'}">${c.has_secret ? 'set' : 'missing'}</span></td>
+      <td style="text-align:right">
+        <button class="act" onclick="delCred(${c.id}, '${esc(c.name)}')">Delete</button>
+      </td>
+    </tr>`).join('') : '<tr><td colspan="6" class="empty">No profiles.</td></tr>';
+}
+
+async function guard(fn) {
+  try { await fn(); await refresh(); }
+  catch (e) { note(e.message); }
+}
+
+const addTarget = e => { e.preventDefault(); guard(async () => {
+  await call('/targets', {method: 'POST', body: JSON.stringify({
+    name: tName.value.trim(), address: tAddr.value.trim(), method: tMethod.value,
+    credential: tCred.value || null, vendor_override: tVendor.value.trim() || null,
+  })});
+  tName.value = tAddr.value = tVendor.value = '';
+  note('Target added.', 'ok');
+});};
+
+const toggle = (id, enabled) => guard(() =>
+  call('/targets/' + id, {method: 'PATCH', body: JSON.stringify({enabled})}));
+
+const delTarget = (id, name) => {
+  if (confirm(`Delete target "${name}"?`)) guard(() => call('/targets/' + id, {method: 'DELETE'}));
+};
+
+function credFields() {
+  const snmp = cKind.value === 'snmp', env = cMode.value === 'env_ref';
+  lblVer.hidden = !snmp;
+  lblSecret.firstChild.textContent = snmp ? 'Community' : 'API token';
+  cSecret.type = env ? 'text' : 'password';
+  cSecret.placeholder = env ? 'SNMP_COMMUNITY' : '';
+  document.getElementById('credHint').textContent = env
+    ? 'The name of an environment variable. The value stays outside the database.'
+    : 'The value itself, encrypted at rest. Requires SCANSPOT_SECRET_KEY.';
+}
+
+const addCred = e => { e.preventDefault(); guard(async () => {
+  const snmp = cKind.value === 'snmp';
+  const field = snmp ? 'community' : 'api_token';
+  const body = {name: cName.value.trim(), kind: cKind.value,
+                params: snmp ? {snmp_version: cVer.value} : {}};
+  body[cMode.value === 'env_ref' ? 'secret_refs' : 'secrets'] = {[field]: cSecret.value.trim()};
+  await call('/credentials', {method: 'POST', body: JSON.stringify(body)});
+  cName.value = cSecret.value = '';
+  note('Credential profile saved.', 'ok');
+});};
+
+const delCred = (id, name) => {
+  if (confirm(`Delete credential profile "${name}"?`)) guard(() => call('/credentials/' + id, {method: 'DELETE'}));
+};
+
+async function start() {
+  document.getElementById('gate').hidden = true;
+  document.getElementById('app').hidden = false;
+  credFields();
+  try { await refresh(); } catch (e) { note(e.message); }
+}
+
+if (KEY) start(); else document.getElementById('gate').hidden = false;
+</script>
+</body>
+</html>

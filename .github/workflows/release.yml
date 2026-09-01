@@ -46,7 +46,10 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            # Only a final release moves `latest`. Without this guard a
+            # prerelease such as v2.0.0-alpha.1 would silently become the tag
+            # everyone pulls by default.
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
