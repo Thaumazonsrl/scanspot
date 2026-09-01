@@ -19,6 +19,10 @@ tests/
 pyproject.toml
 requirements-dev.txt
 
+# Sample integrations. They run against a deployed scanspot from outside; there
+# is no reason to carry them inside it.
+examples/
+
 # Documentation and orchestration.
 README.md
 CONTRIBUTING.md
