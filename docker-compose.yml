@@ -18,7 +18,7 @@
 services:
 
   scanner:
-    image: ghcr.io/thaumazonsrl/scanspot:1.0.0
+    image: ghcr.io/thaumazonsrl/scanspot:2.0.0
     container_name: scanspot
     restart: unless-stopped
 
